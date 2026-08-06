@@ -53,7 +53,7 @@ class ThuebanAgent:
     def start(self, game_state) -> None:
         data    = self._to_raw(game_state)
         game_id = data.get("game", {}).get("id", "unknown")
-        _game_memory[game_id] = {"food": set(), "enemy_info": {}}
+        _game_memory[game_id] = {"food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []}
 
     def move(self, game_state):
         data    = self._to_raw(game_state)
