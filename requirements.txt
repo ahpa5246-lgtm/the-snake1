@@ -1,0 +1,10 @@
+# Battlesnake Blackout 2026 — Python dependencies
+
+# ASGI framework + routing
+fastapi>=0.111.0
+
+# Production ASGI server (blazing fast, multi-worker)
+uvicorn[standard]>=0.29.0
+
+# Data validation (FastAPI dependency)
+pydantic>=2.7.0
