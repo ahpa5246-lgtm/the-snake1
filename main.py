@@ -48,10 +48,10 @@ class GameState(BaseModel):
 # ---------------------------------------------------------------------------
 SNAKE_INFO: dict[str, Any] = {
     "apiversion": "1",
-    "author":     "Blackout2026",
-    "color":      "#1a1a2e",   # deep navy — change to taste
-    "head":       "evil",
-    "tail":       "bolt",
+    "author":     "Mina Hussein",
+    "color":      "#FF0000",   
+    "head":       "default",
+    "tail":       "default",
     "version":    "4.0.0",
 }
 
