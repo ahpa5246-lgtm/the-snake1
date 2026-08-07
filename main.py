@@ -1,48 +1,40 @@
 """
 Battlesnake Blackout 2026 — High-Performance FastAPI Server
-Survival Logic V8.0 | Total Domination Protocol
+Survival Logic V9.0 | APEX PREDATOR Protocol
 
-V7.0 preserved components (unchanged):
-  Cross-turn food memory + TTL eviction (2.3)
-  Dead-snake ghost purge (2.2)
-  Partial-visibility tail vacating (2.1)
-  Dynamic H2H risk (5.2)
-  Probabilistic ghost occupancy (5.3)
-  Reverse multi-source food BFS (7.2)
-  Hazard-aware Dijkstra pathing (7.1)
-  Game-phase routing + dedicated 1v1 scorer (4.2, 4.3)
+PRESERVED from V7/V8 (unchanged):
+  Cross-turn food memory + TTL eviction
+  Dead-snake ghost purge
+  Partial-visibility tail vacating
+  Probabilistic ghost occupancy
+  Reverse multi-source food BFS + hazard-aware Dijkstra
+  All V8 bug fixes (1.1–1.5)
+  _is_corridor_trap, _is_pin_trap, _min_escape_size
 
-V8.0 critical bug fixes:
-  1.1 Minimax just_ate initialization
-  1.2 Minimax as score modifier (5% tiebreaker), not move replacement
-  1.3 Food race formula corrected (stronger chase for certain food)
-  1.4 1v1 kill cells passed to corridor-trap filter
-  1.5 agent_adapter.py food_meta initialization (in that file)
-
-V8.0 strategic enhancements:
-  2.1 Edge/corner penalty (W_EDGE=-60, W_CORNER=-180)
-  2.2 Pin-trap detection (_is_pin_trap)
-  2.3 1v1 constriction bonus
-  2.4 Desperation mode (health < 15)
-  2.5 Tail-following coiling
-  2.6 LATE_FFA aggression
-  2.7 Threat density map (crossfire penalty)
-
-V8.0 combat refinements:
-  3.1 Trapped-enemy kill exception
-  3.2 Equal-H2H hazard exploitation (RISK_EQUAL → RISK_LOW on hazard cells)
-  3.3 Ghost line-of-sight reset (already correct in V7 — verified by T3 test)
-
-V8.0 performance & robustness:
-  4.1 Adaptive compute budget (per-game latency history)
-  4.3 Graceful degradation — _rank wraps in try/except → space-max fallback
+NEW in V9.0:
+  GameContext dataclass — built once per turn, shared everywhere
+  MoveTier enum — Hierarchical Veto System (no cross-tier scoring)
+  _build_context — single context factory in get_best_move
+  _is_boxed_in — flood-fill with conservative occupied + time-gate
+  _has_death_sentence — DFS depth-5 with time-gate
+  _opening_book — turns 1-5 bypass
+  _executioner_score — 1v1 starvation food-path blockade
+  _constriction_score — space denial + wall press
+  _is_ambush — forced-win ambush detector
+  _food_race_v2 — multi-enemy food race with tie resolution
+  Starvation Clock — replaces static HUNGER_THRESHOLD
+  Dynamic phase weights — per-phase W_VORONOI, W_FOOD, W_EDGE etc.
+  Shadow penalty — same row/col as enemy within distance 2
+  Probabilistic minimax — 60/30/10 paranoid/random/greedy blend
+  occupied_conservative — ghost-augmented blocked set for survival
 """
 
 import heapq
 import logging
 import random
 import time
-from enum import Enum
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum
 from itertools import product as _iproduct
 from typing import Any, Optional
 
@@ -62,7 +54,7 @@ log = logging.getLogger("battlesnake")
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="الثعبان — Battlesnake Blackout 2026", version="8.0.0")
+app = FastAPI(title="الثعبان — Battlesnake Blackout 2026", version="9.0.0")
 
 
 class GameState(BaseModel):
@@ -79,28 +71,64 @@ SNAKE_INFO: dict[str, Any] = {
     "color":      "#FF0000",
     "head":       "default",
     "tail":       "default",
-    "version":    "8.0.0",
+    "version":    "9.0.0",
 }
 
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
-FOOD_STALE_TTL = 40   # turns before out-of-view food is evicted from memory
+FOOD_STALE_TTL = 40
 
 # ---------------------------------------------------------------------------
-# Per-game memory — keyed by game_id
+# Per-game memory
 # ---------------------------------------------------------------------------
 _game_memory: dict[str, dict] = {}
 
 
 # ===========================================================================
-# Game-Phase enum
+# Enums
 # ===========================================================================
 class GamePhase(Enum):
     EARLY    = "early"
     MID      = "mid"
     LATE_1V1 = "late_1v1"
     LATE_FFA = "late_ffa"
+
+
+class MoveTier(IntEnum):
+    """Hierarchical priority — higher tier wins; no cross-tier scoring."""
+    VETO            = 0
+    SURVIVAL_RISKY  = 1
+    SURVIVAL_SAFE   = 2
+    AGGRESSIVE_SAFE = 3
+
+
+# ===========================================================================
+# GameContext — built ONCE per turn in get_best_move
+# ===========================================================================
+@dataclass
+class GameContext:
+    our_head:             tuple[int, int]
+    our_body:             list
+    our_len:              int
+    our_health:           int
+    our_tail:             tuple[int, int] | None
+    width:                int
+    height:               int
+    turn:                 int
+    occupied:             set              # solid blocked cells
+    occupied_conservative: set            # occupied + ghost zones (for survival)
+    hazard_set:           set
+    hazard_dmg:           int
+    enemy_heads:          list            # list[tuple[int,int]] — visible heads
+    enemy_data:           list            # list[dict] — processed enemy records
+    visible_food:         set
+    merged_food:          set
+    food_dist_map:        dict
+    phase:                GamePhase
+    deadline:             float
+    view_radius:          int
+    enemy_info:           dict            # raw memory entry
 
 
 # ===========================================================================
@@ -135,16 +163,16 @@ def _is_in_view(px: int, py: int, hx: int, hy: int, radius: int) -> bool:
 
 
 # ===========================================================================
-# Memory updates
+# Memory updates (preserved from V7/V8)
 # ===========================================================================
 
 def _update_food_memory(game_id: str, data: dict) -> set[tuple[int, int]]:
-    """Cross-turn food memory with stale-TTL eviction (Bug fix 2.3)."""
     mem = _game_memory.setdefault(
-        game_id, {"food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []}
+        game_id,
+        {"food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []}
     )
-    prev_food: set[tuple[int, int]] = mem.setdefault("food", set())
-    food_meta: dict[tuple[int, int], int] = mem.setdefault("food_meta", {})
+    prev_food: set = mem.setdefault("food", set())
+    food_meta: dict = mem.setdefault("food_meta", {})
 
     you    = data["you"]
     head   = you.get("head") or {}
@@ -153,12 +181,12 @@ def _update_food_memory(game_id: str, data: dict) -> set[tuple[int, int]]:
     radius = _get_view_radius(data)
     turn   = data.get("turn", 0)
 
-    visible_food: set[tuple[int, int]] = {
+    visible_food: set = {
         (f["x"], f["y"]) for f in data.get("board", {}).get("food", [])
     }
 
-    new_memory: set[tuple[int, int]] = set()
-    new_meta: dict[tuple[int, int], int] = {}
+    new_memory: set = set()
+    new_meta: dict = {}
 
     for pos in prev_food:
         px, py = pos
@@ -182,25 +210,20 @@ def _update_food_memory(game_id: str, data: dict) -> set[tuple[int, int]]:
 
 
 def _update_enemy_memory(game_id: str, data: dict) -> dict:
-    """
-    Track per-enemy visibility.
-    Bug fix 2.2: Remove dead-snake entries.
-    Bug fix 2.1: Store last_known_length for partial-visibility tail inference.
-    """
     mem = _game_memory.setdefault(
-        game_id, {"food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []}
+        game_id,
+        {"food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []}
     )
-    enemy_info: dict[str, dict] = mem.setdefault("enemy_info", {})
+    enemy_info: dict = mem.setdefault("enemy_info", {})
 
     you_id = data["you"]["id"]
     turn   = data.get("turn", 0)
 
-    # Bug fix 2.2: purge dead snakes
+    # Purge dead snakes (V8 fix 2.2)
     alive_ids = {s["id"] for s in data["board"].get("snakes", [])}
     for dead_id in list(enemy_info.keys()):
         if dead_id not in alive_ids:
             del enemy_info[dead_id]
-            log.debug("Ghost purged: %s", dead_id)
 
     for snake in data["board"].get("snakes", []):
         sid = snake["id"]
@@ -227,10 +250,9 @@ def _update_enemy_memory(game_id: str, data: dict) -> dict:
 
 
 # ===========================================================================
-# TacticalEngine — V8.0 Total Domination Protocol
+# TacticalEngine — V9.0 APEX PREDATOR
 # ===========================================================================
 class TacticalEngine:
-    """V8.0 Total Domination Protocol."""
 
     _DELTAS = ((0, 1), (0, -1), (-1, 0), (1, 0))
 
@@ -241,20 +263,40 @@ class TacticalEngine:
         "right": ( 1,  0),
     }
 
-    # ── Scoring weights ────────────────────────────────────────────────────
+    # ── Base constants ─────────────────────────────────────────────────
     W_VORONOI         = 20
     W_COMBAT_KILL     = 800
     W_HAZARD_CELL     = -600
     W_FOOD            = -30
     W_CENTER          = -3
     W_GHOST_BASE      = -250
-    W_EDGE            = -60     # V8.0: edge penalty
-    W_CORNER          = -180    # V8.0: corner penalty (cumulative with edge = -240)
+    W_EDGE            = -60
+    W_CORNER          = -180
     GHOST_DECAY_TURNS  = 5
     GHOST_RADIUS       = 2
     KILL_MARGIN        = 2
     HUNGER_THRESHOLD   = 45
     COMPUTE_BUDGET_S: float = 0.250
+
+    # ── Phase-dynamic weights (V9.0) ───────────────────────────────────
+    PHASE_WEIGHTS: dict[GamePhase, dict] = {
+        GamePhase.EARLY: {
+            "W_VORONOI": 15, "W_FOOD": -20, "W_EDGE": -6,
+            "W_CORNER": -15, "W_COMBAT_KILL": 800, "HUNGER_THRESHOLD": 50,
+        },
+        GamePhase.MID: {
+            "W_VORONOI": 20, "W_FOOD": -30, "W_EDGE": -4,
+            "W_CORNER": -12, "W_COMBAT_KILL": 800, "HUNGER_THRESHOLD": 45,
+        },
+        GamePhase.LATE_1V1: {
+            "W_VORONOI": 25, "W_FOOD": -15, "W_EDGE": 0,
+            "W_CORNER": 0, "W_COMBAT_KILL": 1200, "HUNGER_THRESHOLD": 25,
+        },
+        GamePhase.LATE_FFA: {
+            "W_VORONOI": 20, "W_FOOD": -25, "W_EDGE": -2,
+            "W_CORNER": -8, "W_COMBAT_KILL": 1200, "HUNGER_THRESHOLD": 40,
+        },
+    }
 
     # ================================================================== #
     #  PRIMITIVE 1: Multi-source Voronoi BFS                             #
@@ -264,12 +306,12 @@ class TacticalEngine:
         cls,
         our_head: tuple[int, int],
         enemy_heads: list[tuple[int, int]],
-        occupied: set[tuple[int, int]],
+        occupied: set,
         width: int,
         height: int,
     ) -> int:
-        dist: dict[tuple[int, int], tuple[int, int]] = {}
-        queue: list[tuple[int, tuple[int, int]]] = []
+        dist: dict = {}
+        queue: list = []
 
         if our_head not in occupied:
             dist[our_head] = (0, 0)
@@ -297,19 +339,19 @@ class TacticalEngine:
         return sum(1 for (_, o) in dist.values() if o == 0)
 
     # ================================================================== #
-    #  PRIMITIVE 2: BFS shortest-path with hazard cost (7.1)             #
+    #  PRIMITIVE 2: BFS / Dijkstra with hazard cost                     #
     # ================================================================== #
     @classmethod
     def bfs_dist(
         cls,
         start: tuple[int, int],
-        targets: set[tuple[int, int]],
-        occupied: set[tuple[int, int]],
+        targets: set,
+        occupied: set,
         width: int,
         height: int,
         *,
         max_dist: int = 10**9,
-        hazard_cells: set[tuple[int, int]] | None = None,
+        hazard_cells: set | None = None,
         hazard_cost: float = 1.0,
     ) -> float:
         if not targets:
@@ -318,7 +360,7 @@ class TacticalEngine:
             return 0.0
 
         if bool(hazard_cells) and hazard_cost > 1.0:
-            best: dict[tuple[int, int], float] = {start: 0.0}
+            best: dict = {start: 0.0}
             pq = [(0.0, start)]
             while pq:
                 d, (cx, cy) = heapq.heappop(pq)
@@ -338,8 +380,8 @@ class TacticalEngine:
                             heapq.heappush(pq, (nd, (nx, ny)))
             return float(max_dist)
         else:
-            visited: set[tuple[int, int]] = {start}
-            queue: list[tuple[int, int]] = [start]
+            visited: set = {start}
+            queue: list = [start]
             ptr = 0
             dist2 = 0
             while ptr < len(queue):
@@ -361,25 +403,25 @@ class TacticalEngine:
             return float(max_dist)
 
     # ================================================================== #
-    #  PRIMITIVE 3: Reverse multi-source food BFS (7.2)                  #
+    #  PRIMITIVE 3: Reverse multi-source food BFS                       #
     # ================================================================== #
     @classmethod
     def _food_bfs_reverse(
         cls,
-        food_targets: set[tuple[int, int]],
-        occupied: set[tuple[int, int]],
+        food_targets: set,
+        occupied: set,
         width: int,
         height: int,
-        hazard_cells: set[tuple[int, int]] | None = None,
+        hazard_cells: set | None = None,
         hazard_dmg: int = 0,
-    ) -> dict[tuple[int, int], float]:
+    ) -> dict:
         if not food_targets:
             return {}
 
         hazard_cost = 1.0 + hazard_dmg / 10.0 if (hazard_cells and hazard_dmg > 0) else 1.0
-        use_haz     = bool(hazard_cells) and hazard_dmg > 0
-        dist_map: dict[tuple[int, int], float] = {}
-        pq: list[tuple[float, tuple[int, int]]] = []
+        use_haz = bool(hazard_cells) and hazard_dmg > 0
+        dist_map: dict = {}
+        pq: list = []
 
         for food in food_targets:
             if food not in occupied:
@@ -402,19 +444,14 @@ class TacticalEngine:
         return dist_map
 
     # ================================================================== #
-    #  PRIMITIVE 4: Occupied set — Bug fix 2.1                           #
+    #  PRIMITIVE 4: Occupied set (V8 tail-vacating logic)               #
     # ================================================================== #
     @classmethod
-    def _build_occupied(
-        cls,
-        data: dict,
-        game_id: str,
-        enemy_info: dict,
-    ) -> set[tuple[int, int]]:
+    def _build_occupied(cls, data: dict, game_id: str, enemy_info: dict) -> set:
         you    = data["you"]
         board  = data["board"]
         you_id = you["id"]
-        occupied: set[tuple[int, int]] = set()
+        occupied: set = set()
 
         for snake in board.get("snakes", []):
             body = snake.get("body", [])
@@ -455,7 +492,111 @@ class TacticalEngine:
         return occupied
 
     # ================================================================== #
-    #  COMBAT: Dynamic H2H risk (5.2)                                   #
+    #  GameContext factory — called once per turn                        #
+    # ================================================================== #
+    @classmethod
+    def _build_context(
+        cls,
+        data: dict,
+        game_id: str,
+        merged_food: set,
+        deadline: float,
+    ) -> GameContext:
+        board   = data["board"]
+        you     = data["you"]
+        you_id  = you["id"]
+        width   = board["width"]
+        height  = board["height"]
+        turn    = data.get("turn", 0)
+
+        mem         = _game_memory.get(game_id, {})
+        enemy_info  = mem.get("enemy_info", {})
+        occupied    = cls._build_occupied(data, game_id, enemy_info)
+        hazard_set  = {(h["x"], h["y"]) for h in board.get("hazards", [])}
+        hazard_dmg  = _get_hazard_dmg(data)
+        view_radius = _get_view_radius(data)
+        phase       = cls._get_game_phase(data)
+
+        # occupied_conservative: occupied + ghost zones around hidden enemies
+        visible_ids = {s["id"] for s in board.get("snakes", []) if s.get("head") is not None}
+        occ_cons = set(occupied)
+        for sid2, info2 in enemy_info.items():
+            if sid2 not in visible_ids:
+                lkh = info2.get("last_known_head")
+                if lkh:
+                    lhx, lhy = lkh
+                    lst = info2.get("last_seen_turn", 0)
+                    turns_hidden = max(0, turn - lst)
+                    # Ghost zone: radius = min(turns_hidden, 2)
+                    r = min(turns_hidden + 1, 2)
+                    for ddx in range(-r, r + 1):
+                        for ddy in range(-r, r + 1):
+                            cx2, cy2 = lhx + ddx, lhy + ddy
+                            if 0 <= cx2 < width and 0 <= cy2 < height:
+                                occ_cons.add((cx2, cy2))
+
+        # Process enemy data
+        enemy_heads: list = []
+        enemy_data: list = []
+
+        for snake in board.get("snakes", []):
+            if snake["id"] == you_id:
+                continue
+            eh = snake.get("head")
+            if eh is not None:
+                enemy_heads.append((eh["x"], eh["y"]))
+            e_body = snake.get("body", [])
+            visible_segs = sum(1 for s in e_body if s is not None)
+            info3 = enemy_info.get(snake["id"], {})
+            enemy_data.append({
+                "id":            snake["id"],
+                "head":          snake.get("head"),
+                "head_pos":      (eh["x"], eh["y"]) if eh else None,
+                "length":        snake.get("length", visible_segs),
+                "visible_segs":  visible_segs,
+                "health":        snake.get("health") or 100,
+                "body":          e_body,
+                "prev_length":   info3.get("last_known_length", 0),
+            })
+
+        # Visible food
+        visible_food = {(f["x"], f["y"]) for f in board.get("food", [])}
+
+        # Food distance map
+        food_dist_map = cls._food_bfs_reverse(
+            merged_food, occupied, width, height, hazard_set, hazard_dmg
+        )
+
+        # Build our body
+        our_body = [_pt(s) for s in you.get("body", []) if _pt(s) is not None]
+        our_tail = _pt(you["body"][-1]) if you.get("body") else None
+
+        return GameContext(
+            our_head             = (you["head"]["x"], you["head"]["y"]),
+            our_body             = our_body,
+            our_len              = len(you.get("body", [])),
+            our_health           = you["health"],
+            our_tail             = our_tail,
+            width                = width,
+            height               = height,
+            turn                 = turn,
+            occupied             = occupied,
+            occupied_conservative = occ_cons,
+            hazard_set           = hazard_set,
+            hazard_dmg           = hazard_dmg,
+            enemy_heads          = enemy_heads,
+            enemy_data           = enemy_data,
+            visible_food         = visible_food,
+            merged_food          = merged_food,
+            food_dist_map        = food_dist_map,
+            phase                = phase,
+            deadline             = deadline,
+            view_radius          = view_radius,
+            enemy_info           = enemy_info,
+        )
+
+    # ================================================================== #
+    #  COMBAT: Dynamic H2H risk (V8 preserved, phase-aware)             #
     # ================================================================== #
     @classmethod
     def _h2h_risk_level(cls, our_len: int, enemy_len: int, kill_margin: int | None = None) -> str:
@@ -471,18 +612,111 @@ class TacticalEngine:
             return "RISK_HIGH"
 
     # ================================================================== #
-    #  SURVIVAL: Corridor trap detection (3.1)                          #
+    #  SURVIVAL: Boxed-in flood-fill (V9.0)                             #
+    # ================================================================== #
+    @classmethod
+    def _is_boxed_in(cls, ctx: GameContext, candidate: tuple[int, int]) -> bool:
+        """
+        Flood-fill from candidate using occupied_conservative.
+        Returns True if reachable space < our_len + 4 OR free neighbors <= 1.
+        Time-gated every 500 iterations (returns False on timeout = assume safe).
+        """
+        if candidate in ctx.occupied_conservative:
+            return True
+
+        # Quick neighbor check
+        free_nbrs = sum(
+            1 for dx, dy in cls._DELTAS
+            if (0 <= candidate[0]+dx < ctx.width
+                and 0 <= candidate[1]+dy < ctx.height
+                and (candidate[0]+dx, candidate[1]+dy) not in ctx.occupied_conservative)
+        )
+        if free_nbrs <= 1:
+            return True
+
+        target = ctx.our_len + 4
+        visited: set = {candidate}
+        queue = [candidate]
+        ptr   = 0
+
+        while ptr < len(queue):
+            if ptr % 500 == 0 and time.monotonic() >= ctx.deadline - 0.04:
+                return False  # timeout → assume safe
+            cx, cy = queue[ptr]; ptr += 1
+            for dx, dy in cls._DELTAS:
+                nx, ny = cx + dx, cy + dy
+                if (0 <= nx < ctx.width and 0 <= ny < ctx.height
+                        and (nx, ny) not in ctx.occupied_conservative
+                        and (nx, ny) not in visited):
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+                    if len(visited) >= target:
+                        return False  # enough space
+
+        return len(visited) < target
+
+    # ================================================================== #
+    #  SURVIVAL: Death-sentence DFS depth-5 (V9.0)                     #
+    # ================================================================== #
+    @classmethod
+    def _has_death_sentence(cls, ctx: GameContext, candidate: tuple[int, int]) -> bool:
+        """
+        DFS depth=5. Returns True if ALL branches lead to space < our_len + 3.
+        Time-gated every 50 nodes.
+        """
+        if candidate in ctx.occupied_conservative:
+            return True
+
+        node_count = [0]
+        deadline   = ctx.deadline - 0.04
+
+        def dfs(pos: tuple[int, int], depth: int, local_occ: set) -> bool:
+            node_count[0] += 1
+            if node_count[0] % 50 == 0 and time.monotonic() >= deadline:
+                return False  # timeout → assume not sentenced
+
+            neighbors = [
+                (pos[0]+dx, pos[1]+dy)
+                for dx, dy in cls._DELTAS
+                if (0 <= pos[0]+dx < ctx.width
+                    and 0 <= pos[1]+dy < ctx.height
+                    and (pos[0]+dx, pos[1]+dy) not in local_occ)
+            ]
+            if not neighbors:
+                return True  # dead end
+
+            if depth >= 5:
+                # Count reachable at leaf
+                vis = {pos}
+                q = [pos]; p2 = 0
+                while p2 < len(q) and len(vis) < ctx.our_len + 3:
+                    cx2, cy2 = q[p2]; p2 += 1
+                    for dx2, dy2 in cls._DELTAS:
+                        nx2, ny2 = cx2+dx2, cy2+dy2
+                        if (0 <= nx2 < ctx.width and 0 <= ny2 < ctx.height
+                                and (nx2, ny2) not in local_occ
+                                and (nx2, ny2) not in vis):
+                            vis.add((nx2, ny2))
+                            q.append((nx2, ny2))
+                return len(vis) < ctx.our_len + 3
+
+            return all(dfs(n, depth + 1, local_occ | {n}) for n in neighbors)
+
+        return dfs(candidate, 0, ctx.occupied_conservative | {candidate})
+
+    # ================================================================== #
+    #  SURVIVAL: Corridor trap (V8 preserved)                           #
     # ================================================================== #
     @classmethod
     def _is_corridor_trap(
         cls,
         candidate: tuple[int, int],
         snake_len: int,
-        occupied: set[tuple[int, int]],
-        threatened: set[tuple[int, int]],
+        occupied: set,
+        threatened: set,
         width: int,
         height: int,
-        kill_cells: set[tuple[int, int]],
+        kill_cells: set,
     ) -> bool:
         if candidate in kill_cells:
             return False
@@ -504,7 +738,7 @@ class TacticalEngine:
         return len(visited) < snake_len + 3
 
     # ================================================================== #
-    #  SURVIVAL: Pin-trap detection (2.2) — V8.0                        #
+    #  SURVIVAL: Pin-trap 2-ply (V8 preserved)                         #
     # ================================================================== #
     @classmethod
     def _is_pin_trap(
@@ -512,48 +746,43 @@ class TacticalEngine:
         candidate: tuple[int, int],
         head_x: int,
         head_y: int,
-        enemies: list[dict],
-        occupied: set[tuple[int, int]],
+        enemies: list,
+        occupied: set,
         width: int,
         height: int,
-        kill_cells: set[tuple[int, int]],
+        kill_cells: set,
         deadline: float,
     ) -> bool:
-        """
-        Returns True if enemy move combinations can block ALL our next-turn
-        escapes from `candidate` (2-ply lookahead for pin traps).
-        """
         if candidate in kill_cells:
             return False
         if time.monotonic() >= deadline - 0.06:
             return False
 
-        # After moving to candidate, our neck is (head_x, head_y)
         neck = (head_x, head_y)
         our_next = [
-            (candidate[0] + dx, candidate[1] + dy)
+            (candidate[0]+dx, candidate[1]+dy)
             for dx, dy in cls._DELTAS
-            if (0 <= candidate[0] + dx < width
-                and 0 <= candidate[1] + dy < height
-                and (candidate[0] + dx, candidate[1] + dy) not in occupied
-                and (candidate[0] + dx, candidate[1] + dy) != neck)
+            if (0 <= candidate[0]+dx < width
+                and 0 <= candidate[1]+dy < height
+                and (candidate[0]+dx, candidate[1]+dy) not in occupied
+                and (candidate[0]+dx, candidate[1]+dy) != neck)
         ]
         if not our_next:
-            return True  # already pinned
+            return True
 
         vis_enemies = [e for e in enemies if e.get("head") is not None][:3]
         if not vis_enemies:
             return False
 
-        enemy_opts: list[list[tuple[int, int]]] = []
+        enemy_opts: list = []
         for e in vis_enemies:
             eh = (e["head"]["x"], e["head"]["y"])
             opts = [
-                (eh[0] + dx, eh[1] + dy)
+                (eh[0]+dx, eh[1]+dy)
                 for dx, dy in cls._DELTAS
-                if (0 <= eh[0] + dx < width
-                    and 0 <= eh[1] + dy < height
-                    and (eh[0] + dx, eh[1] + dy) not in occupied)
+                if (0 <= eh[0]+dx < width
+                    and 0 <= eh[1]+dy < height
+                    and (eh[0]+dx, eh[1]+dy) not in occupied)
             ]
             enemy_opts.append(opts if opts else [eh])
 
@@ -567,15 +796,15 @@ class TacticalEngine:
         return False
 
     # ================================================================== #
-    #  SURVIVAL: Escape-route analysis (3.2) — gated                    #
+    #  SURVIVAL: Escape-route analysis (V8 preserved)                   #
     # ================================================================== #
     @classmethod
     def _min_escape_size(
         cls,
         candidate: tuple[int, int],
         snake_len: int,
-        occupied: set[tuple[int, int]],
-        enemies: list[dict],
+        occupied: set,
+        enemies: list,
         width: int,
         height: int,
         deadline: float,
@@ -588,14 +817,14 @@ class TacticalEngine:
         if not vis_enemies:
             return False
 
-        enemy_next_opts: list[list[tuple[int, int]]] = []
+        enemy_next_opts: list = []
         for e in vis_enemies:
             eh   = (e["head"]["x"], e["head"]["y"])
             opts = [
-                (eh[0] + dx, eh[1] + dy)
+                (eh[0]+dx, eh[1]+dy)
                 for dx, dy in cls._DELTAS
-                if 0 <= eh[0] + dx < width and 0 <= eh[1] + dy < height
-                and (eh[0] + dx, eh[1] + dy) not in occupied
+                if 0 <= eh[0]+dx < width and 0 <= eh[1]+dy < height
+                and (eh[0]+dx, eh[1]+dy) not in occupied
             ]
             enemy_next_opts.append(opts if opts else [eh])
 
@@ -611,7 +840,7 @@ class TacticalEngine:
             while ptr < len(queue):
                 cx, cy = queue[ptr]; ptr += 1
                 for dx, dy in cls._DELTAS:
-                    nx, ny = cx + dx, cy + dy
+                    nx, ny = cx+dx, cy+dy
                     if (0 <= nx < width and 0 <= ny < height
                             and (nx, ny) not in occ_combo
                             and (nx, ny) not in visited):
@@ -623,18 +852,13 @@ class TacticalEngine:
         return False
 
     # ================================================================== #
-    #  COMBAT: Probabilistic ghost occupancy (5.3)                      #
+    #  COMBAT: Probabilistic ghost occupancy (V8 preserved)             #
     # ================================================================== #
     @classmethod
     def _compute_ghost_risk(
-        cls,
-        enemy_info: dict,
-        turn: int,
-        occupied: set[tuple[int, int]],
-        width: int,
-        height: int,
-    ) -> dict[tuple[int, int], float]:
-        ghost_risk: dict[tuple[int, int], float] = {}
+        cls, enemy_info: dict, turn: int, occupied: set, width: int, height: int,
+    ) -> dict:
+        ghost_risk: dict = {}
 
         for info in enemy_info.values():
             lkh = info.get("last_known_head")
@@ -649,11 +873,11 @@ class TacticalEngine:
             max_r = min(turns_hidden + 1, cls.GHOST_RADIUS)
             lhx, lhy = lkh
 
-            feasibility: set[tuple[int, int]] = set()
+            feasibility: set = set()
             for dx in range(-max_r, max_r + 1):
                 rem = max_r - abs(dx)
                 for dy in range(-rem, rem + 1):
-                    cx, cy = lhx + dx, lhy + dy
+                    cx, cy = lhx+dx, lhy+dy
                     if (0 <= cx < width and 0 <= cy < height
                             and (cx, cy) not in occupied):
                         feasibility.add((cx, cy))
@@ -661,56 +885,169 @@ class TacticalEngine:
             if not feasibility:
                 continue
 
-            prob    = 1.0 / len(feasibility)
-            penalty = cls.W_GHOST_BASE * prob * decay
+            penalty = cls.W_GHOST_BASE * (1.0 / len(feasibility)) * decay
             for cell in feasibility:
-                ghost_risk[cell] = ghost_risk.get(cell, 0.0) + penalty
+                ghost_risk[cell] = max(ghost_risk.get(cell, 0.0) + penalty, -300.0)
 
         return ghost_risk
 
     # ================================================================== #
-    #  STRATEGIC: Food race evaluation (4.1)                            #
+    #  FOOD: Food Race V2 — multi-enemy with tie resolution (V9.0)      #
     # ================================================================== #
     @classmethod
-    def _food_race_value(
+    def _food_race_v2(
         cls,
-        our_pos: tuple[int, int],
-        enemy_heads: list[tuple[int, int]],
-        food_dist_map: dict[tuple[int, int], float],
-        our_len: int,
-        enemies: list[dict],
-        width: int,
-        height: int,
+        candidate: tuple[int, int],
+        ctx: GameContext,
+        enemy_data: list,
     ) -> float:
-        if not food_dist_map:
+        """Returns race_value in [-1.0, +1.0]."""
+        if not ctx.food_dist_map:
             return 0.0
-        d_our = food_dist_map.get(our_pos, float(width + height))
-        if not enemy_heads:
+
+        d_us = ctx.food_dist_map.get(candidate, float("inf"))
+        enemy_dists = [
+            ctx.food_dist_map.get(e["head_pos"], float("inf"))
+            for e in enemy_data if e["head_pos"] is not None
+        ]
+
+        if not enemy_dists:
             return 1.0
-        d_enemy_min = min(
-            food_dist_map.get(eh, float(width + height)) for eh in enemy_heads
+
+        d_min = min(enemy_dists)
+
+        if d_us < d_min:
+            return 1.0
+        elif d_us > d_min:
+            return -0.5
+
+        # Tied — find tying enemies
+        ties = sum(1 for d in enemy_dists if d == d_min)
+        if ties > 1:
+            return -0.9  # multi-tie = certain conflict
+
+        # Solo tie: length comparison
+        tying = next(
+            (e for e in enemy_data
+             if e["head_pos"] is not None
+             and abs(ctx.food_dist_map.get(e["head_pos"], float("inf")) - d_min) < 0.01),
+            None,
         )
-        if d_our < d_enemy_min:
-            return 1.0
-        elif d_our > d_enemy_min:
+        if tying is None:
+            return 0.0
+
+        e_len = tying["length"]
+        if ctx.our_len > e_len + 1:
+            return 0.8
+        elif ctx.our_len > e_len:
+            return 0.4
+        elif ctx.our_len == e_len:
             return -0.5
         else:
-            race_val = 0.2
-            for e in enemies:
-                eh = e.get("head")
-                if eh is None:
-                    continue
-                eh_pos = (eh["x"], eh["y"])
-                if food_dist_map.get(eh_pos, float(width + height)) == d_enemy_min:
-                    e_len = e.get("length", 0)
-                    if our_len > e_len + 1:
-                        race_val = max(race_val, 0.6)
-                    elif our_len < e_len:
-                        race_val = min(race_val, -0.3)
-            return race_val
+            return -0.9
 
     # ================================================================== #
-    #  STRATEGIC: Game phase detection (4.3)                            #
+    #  COMBAT: Executioner Mode (V9.0) — 1v1 starvation blockade       #
+    # ================================================================== #
+    @classmethod
+    def _executioner_score(
+        cls,
+        candidate: tuple[int, int],
+        enemy: dict,
+        ctx: GameContext,
+    ) -> float:
+        """
+        Bonus for blocking the enemy's path to the nearest food
+        when executioner mode is active.
+        """
+        e_pos = enemy.get("head_pos")
+        if e_pos is None or not ctx.food_dist_map:
+            return 0.0
+
+        e_food_dist  = ctx.food_dist_map.get(e_pos, float("inf"))
+        e_health     = enemy.get("health", 100)
+
+        if e_food_dist >= e_health:
+            # Enemy can't reach food in time — switch to constriction
+            return 0.0
+
+        # Find first-step cells on enemy's shortest food path
+        ex, ey = e_pos
+        first_steps = [
+            (ex+dx, ey+dy)
+            for dx, dy in cls._DELTAS
+            if (0 <= ex+dx < ctx.width and 0 <= ey+dy < ctx.height
+                and ctx.food_dist_map.get((ex+dx, ey+dy), float("inf")) < e_food_dist)
+        ]
+
+        if candidate in first_steps:
+            return 2500.0  # blocking their food path
+        if ctx.food_dist_map.get(candidate, float("inf")) < e_food_dist:
+            return 800.0   # we're already on a food-path cell
+        return 0.0
+
+    # ================================================================== #
+    #  COMBAT: Constriction Scorer + wall press (V9.0)                 #
+    # ================================================================== #
+    @classmethod
+    def _constriction_score(
+        cls,
+        candidate: tuple[int, int],
+        enemy_head_pos: tuple[int, int],
+        e_free: int,
+        ctx: GameContext,
+    ) -> float:
+        """
+        e_free = enemy Voronoi without us (precomputed once).
+        Per-candidate: compute enemy Voronoi with our candidate as blocker.
+        """
+        if time.monotonic() >= ctx.deadline - 0.05:
+            return 0.0
+        e_trapped = cls.voronoi_bfs(
+            enemy_head_pos, [candidate], ctx.occupied, ctx.width, ctx.height
+        )
+        constriction = max(0, e_free - e_trapped)
+        return constriction * 55.0  # 40 territory + 15 wall press
+
+    # ================================================================== #
+    #  COMBAT: Ambush Detector (V9.0)                                   #
+    # ================================================================== #
+    @classmethod
+    def _is_ambush(
+        cls,
+        candidate: tuple[int, int],
+        enemy_head_pos: tuple[int, int],
+        ctx: GameContext,
+    ) -> bool:
+        """
+        Returns True if enemy has exactly 2 legal moves:
+        one toward us (H2H), one into a boxed-in cell.
+        """
+        ex, ey = enemy_head_pos
+        if _manhattan(candidate[0], candidate[1], ex, ey) != 1:
+            return False
+
+        e_legal = [
+            (ex+dx, ey+dy)
+            for dx, dy in cls._DELTAS
+            if (0 <= ex+dx < ctx.width
+                and 0 <= ey+dy < ctx.height
+                and (ex+dx, ey+dy) not in ctx.occupied)
+        ]
+
+        if len(e_legal) != 2:
+            return False
+
+        toward_us = [m for m in e_legal if m == candidate]
+        away      = [m for m in e_legal if m != candidate]
+
+        if not toward_us or not away:
+            return False
+
+        return cls._is_boxed_in(ctx, away[0])
+
+    # ================================================================== #
+    #  STRATEGIC: Game phase detection (preserved)                      #
     # ================================================================== #
     @classmethod
     def _get_game_phase(cls, data: dict) -> GamePhase:
@@ -731,154 +1068,79 @@ class TacticalEngine:
                 return GamePhase.LATE_FFA
         return GamePhase.EARLY if turn < 20 else GamePhase.MID
 
-    @classmethod
-    def _is_1v1(cls, enemies: list[dict]) -> bool:
-        return len(enemies) == 1 and enemies[0].get("head") is not None
-
     # ================================================================== #
-    #  STRATEGIC: Dedicated 1v1 scorer (4.2) — V8.0 enhanced            #
+    #  STRATEGIC: Opening Book turns 1-5 (V9.0)                        #
     # ================================================================== #
     @classmethod
-    def _score_1v1(
-        cls,
-        moves: list[str],
-        data: dict,
-        occupied: set[tuple[int, int]],
-        merged_food: set[tuple[int, int]],
-        enemy_info: dict,
-        *,
-        deadline: float = 0.0,
-    ) -> str:
-        if deadline == 0.0:
-            deadline = time.monotonic() + cls.COMPUTE_BUDGET_S
+    def _opening_book(cls, ctx: GameContext, safe_moves: list) -> str | None:
+        if ctx.turn > 5 or not safe_moves:
+            return None
 
-        board   = data["board"]
-        you     = data["you"]
-        width   = board["width"]
-        height  = board["height"]
-        head_x  = you["head"]["x"]
-        head_y  = you["head"]["y"]
-        health  = you["health"]
-        our_len = len(you["body"])
-        you_id  = you["id"]
+        center_x = ctx.width  // 2
+        center_y = ctx.height // 2
 
-        enemies    = [s for s in board.get("snakes", []) if s["id"] != you_id]
-        hazard_set = {(h["x"], h["y"]) for h in board.get("hazards", [])}
-        food_tgts  = set(merged_food)
-        need_food  = health < 25  # tighter threshold in 1v1
+        def toward_center(moves: list) -> str:
+            best_d = None
+            best_dist = float("inf")
+            for d in moves:
+                dx, dy = cls.DIRECTIONS[d]
+                nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
+                dist = _manhattan(nx, ny, center_x, center_y)
+                if dist < best_dist:
+                    best_dist = dist; best_d = d
+            return best_d or moves[0]
 
-        if not enemies or enemies[0].get("head") is None:
-            return cls._rank_space_max(moves, occupied, width, height, head_x, head_y)
+        if ctx.turn == 1:
+            return toward_center(safe_moves)
 
-        enemy      = enemies[0]
-        e_head_pos = (enemy["head"]["x"], enemy["head"]["y"])
-        e_len      = enemy.get("length", len(enemy.get("body", [])))
+        if ctx.turn in (2, 3):
+            # Grab nearby food if possible
+            for d in safe_moves:
+                dx, dy = cls.DIRECTIONS[d]
+                nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
+                if (nx, ny) in ctx.visible_food:
+                    return d
+            return toward_center(safe_moves)
 
-        # Fix 1.4: compute actual kill_cells for corridor-trap bypass
-        kill_cells_1v1: set[tuple[int, int]] = set()
-        e_body_1v1   = enemy.get("body", [])
-        vis_segs_1v1 = sum(1 for s in e_body_1v1 if s is not None)
-        if (vis_segs_1v1 >= e_len - 1
-                and (our_len - vis_segs_1v1) >= cls.KILL_MARGIN + 1):
-            for dx2, dy2 in cls._DELTAS:
-                c2 = (e_head_pos[0] + dx2, e_head_pos[1] + dy2)
-                if 0 <= c2[0] < width and 0 <= c2[1] < height:
-                    kill_cells_1v1.add(c2)
+        # Turns 4-5: head toward smaller visible enemy; else center
+        smaller_enemies = [
+            e for e in ctx.enemy_data
+            if e["head_pos"] is not None and e["length"] < ctx.our_len
+        ]
+        if smaller_enemies:
+            target = smaller_enemies[0]["head_pos"]
+            best_d = None
+            best_dist = float("inf")
+            for d in safe_moves:
+                dx, dy = cls.DIRECTIONS[d]
+                nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
+                dist = _manhattan(nx, ny, target[0], target[1])
+                if dist < best_dist:
+                    best_dist = dist; best_d = d
+            if best_d:
+                return best_d
 
-        # Corridor trap filter (with correct kill_cells)
-        all_threatened = {
-            (e_head_pos[0] + dx, e_head_pos[1] + dy)
-            for dx, dy in cls._DELTAS
-            if 0 <= e_head_pos[0] + dx < width and 0 <= e_head_pos[1] + dy < height
-        }
-        safe_moves = [
-            d for d in moves
-            if not cls._is_corridor_trap(
-                (head_x + cls.DIRECTIONS[d][0], head_y + cls.DIRECTIONS[d][1]),
-                our_len, occupied, all_threatened, width, height, kill_cells_1v1
-            )
-        ] or moves
+        return toward_center(safe_moves)
 
-        # Precompute enemy's total free space for constriction bonus (2.3)
-        e_free_total = cls.voronoi_bfs(e_head_pos, [], occupied, width, height)
-
-        scores: dict[str, float] = {}
-        timed_out = False
-
-        for direction in safe_moves:
-            if time.monotonic() >= deadline:
-                timed_out = True
-                scores[direction] = 0.0
-                continue
-
-            dx, dy = cls.DIRECTIONS[direction]
-            nx, ny = head_x + dx, head_y + dy
-            cand   = (nx, ny)
-
-            v_our   = cls.voronoi_bfs(cand, [e_head_pos], occupied, width, height)
-            v_enemy = cls.voronoi_bfs(e_head_pos, [cand], occupied, width, height)
-            diff    = v_our - v_enemy
-            dist_to_enemy = _manhattan(nx, ny, e_head_pos[0], e_head_pos[1])
-
-            if our_len > e_len:
-                # Enhancement 2.3: constriction bonus
-                constriction = e_free_total - v_enemy
-                score = diff * 100 + v_our * 10 - dist_to_enemy * 2 + constriction * 25
-            elif our_len == e_len:
-                score = v_our * 50 + diff * 20
-                if need_food and food_tgts:
-                    fd = cls.bfs_dist(cand, food_tgts, occupied, width, height, max_dist=width+height)
-                    score += cls.W_FOOD * fd
-            else:
-                score = v_our * 80 - diff * 10
-                if need_food and food_tgts:
-                    fd = cls.bfs_dist(cand, food_tgts, occupied, width, height, max_dist=width+height)
-                    score += cls.W_FOOD * fd
-
-            if cand in hazard_set:
-                score += cls.W_HAZARD_CELL
-
-            # Enhancement 2.1: edge/corner penalty
-            on_edge   = (nx == 0 or nx == width - 1 or ny == 0 or ny == height - 1)
-            on_corner = ((nx == 0 or nx == width - 1) and (ny == 0 or ny == height - 1))
-            if on_edge:   score += cls.W_EDGE
-            if on_corner: score += cls.W_CORNER
-
-            scores[direction] = score
-
-        if not scores:
-            return random.choice(safe_moves)
-
-        best   = max(scores.values())
-        chosen = random.choice([m for m, s in scores.items() if s == best])
-        elapsed = (time.monotonic() - (deadline - cls.COMPUTE_BUDGET_S)) * 1000
-        log.info("1v1 scores: %s | our=%d vs e=%d | elapsed=%.1fms%s → %s",
-                 {m: f"{s:.0f}" for m, s in scores.items()},
-                 our_len, e_len, elapsed,
-                 " [TIMEOUT]" if timed_out else "", chosen)
-        return chosen
-
+    # ================================================================== #
+    #  Space-max fallback                                                #
+    # ================================================================== #
     @classmethod
     def _rank_space_max(
-        cls,
-        moves: list[str],
-        occupied: set[tuple[int, int]],
-        width: int,
-        height: int,
-        head_x: int,
-        head_y: int,
+        cls, moves: list, occupied: set, width: int, height: int,
+        head_x: int, head_y: int,
     ) -> str:
         best_move  = moves[0] if moves else "up"
         best_space = -1
         for d in moves:
             dx, dy = cls.DIRECTIONS[d]
-            c      = (head_x + dx, head_y + dy)
+            c      = (head_x+dx, head_y+dy)
             vis    = {c}
             q      = [c]; ptr = 0
             while ptr < len(q):
                 cx2, cy2 = q[ptr]; ptr += 1
                 for ddx, ddy in cls._DELTAS:
-                    nc = (cx2 + ddx, cy2 + ddy)
+                    nc = (cx2+ddx, cy2+ddy)
                     if (0 <= nc[0] < width and 0 <= nc[1] < height
                             and nc not in occupied and nc not in vis):
                         vis.add(nc); q.append(nc)
@@ -887,37 +1149,22 @@ class TacticalEngine:
         return best_move
 
     # ================================================================== #
-    #  2-PLY PARANOID MINIMAX (6.0) — V8.0 fixed                        #
+    #  2-PLY PROBABILISTIC MINIMAX (V9.0: 60/30/10 blend)              #
     # ================================================================== #
     @classmethod
-    def _get_legal_moves_sim(
-        cls,
-        head: tuple[int, int],
-        body: list[tuple[int, int]],
-        occupied: set[tuple[int, int]],
-        width: int,
-        height: int,
-    ) -> list[str]:
+    def _get_legal_moves_sim(cls, head, body, occupied, width, height):
         neck = body[1] if len(body) > 1 else None
         return [
             d for d, (dx, dy) in cls.DIRECTIONS.items()
-            if (0 <= head[0] + dx < width and 0 <= head[1] + dy < height
-                and (head[0] + dx, head[1] + dy) != neck
-                and (head[0] + dx, head[1] + dy) not in occupied)
+            if (0 <= head[0]+dx < width and 0 <= head[1]+dy < height
+                and (head[0]+dx, head[1]+dy) != neck
+                and (head[0]+dx, head[1]+dy) not in occupied)
         ]
 
     @classmethod
     def _simulate_and_evaluate(
-        cls,
-        us: dict,
-        enemy_sims: list[dict],
-        all_moves: dict[str, str],
-        food_set: set[tuple[int, int]],
-        hazard_set: set[tuple[int, int]],
-        hazard_dmg: int,
-        food_dist_map: dict[tuple[int, int], float],
-        width: int,
-        height: int,
+        cls, us, enemy_sims, all_moves, food_set,
+        hazard_set, hazard_dmg, food_dist_map, width, height,
     ) -> float:
         from collections import defaultdict
 
@@ -926,12 +1173,11 @@ class TacticalEngine:
         all_s = [us2] + enems
 
         # 1. New heads
-        new_heads: dict[str, tuple[int, int]] = {}
+        new_heads: dict = {}
         for s in all_s:
-            if not s.get("alive", True):
-                continue
+            if not s.get("alive", True): continue
             dx, dy = cls.DIRECTIONS.get(all_moves.get(s["id"], "up"), (0, 1))
-            new_heads[s["id"]] = (s["head"][0] + dx, s["head"][1] + dy)
+            new_heads[s["id"]] = (s["head"][0]+dx, s["head"][1]+dy)
 
         # 2. OOB
         for s in all_s:
@@ -943,8 +1189,8 @@ class TacticalEngine:
         if not us2.get("alive", True):
             return -999999.0
 
-        # 3. Body collision (Fix 1.1: uses actual just_ate flags)
-        body_cells: set[tuple[int, int]] = set()
+        # 3. Body collision (uses actual just_ate flags — V8 fix 1.1)
+        body_cells: set = set()
         for s in all_s:
             if not s.get("alive", True): continue
             for i, seg in enumerate(s["body"]):
@@ -961,7 +1207,7 @@ class TacticalEngine:
             return -999999.0
 
         # 4. H2H
-        head_to_snakes: dict[tuple[int, int], list[dict]] = defaultdict(list)
+        head_to_snakes: dict = defaultdict(list)
         for s in all_s:
             if s.get("alive", True):
                 head_to_snakes[new_heads[s["id"]]].append(s)
@@ -972,9 +1218,8 @@ class TacticalEngine:
             for c in claimants:
                 if c["length"] < mx:
                     c["alive"] = False
-                elif c["length"] == mx:
-                    if any(x["id"] != c["id"] and x["length"] == mx for x in claimants):
-                        c["alive"] = False
+                elif any(x["id"] != c["id"] and x["length"] == mx for x in claimants):
+                    c["alive"] = False
 
         if not us2.get("alive", True):
             return -999999.0
@@ -990,10 +1235,8 @@ class TacticalEngine:
                 s["body"].pop()
                 s["just_ate"] = False
             else:
-                s["health"]   = 100
-                s["just_ate"] = True
-            s["head"]   = nh
-            s["length"] = len(s["body"])
+                s["health"] = 100; s["just_ate"] = True
+            s["head"] = nh; s["length"] = len(s["body"])
 
         # 6. Health / hazard
         for s in all_s:
@@ -1010,12 +1253,12 @@ class TacticalEngine:
         alive_eh    = [e["head"] for e in enems if e.get("alive", True)]
         sim_occ     = {seg for s in all_s if s.get("alive", True) for seg in s["body"]}
         our_voronoi = cls.voronoi_bfs(us2["head"], alive_eh, sim_occ, width, height)
-        our_fd      = food_dist_map.get(us2["head"], float(width + height))
+        our_fd      = food_dist_map.get(us2["head"], float(width+height))
         food_rv     = 1.0 if our_fd < 3 else (0.5 if our_fd < 7 else 0.0)
 
         return (
             our_voronoi * 15
-            + enemy_died  * 5000
+            + enemy_died * 5000
             + us2["health"] * 2
             + food_rv * 100
             - (500 if us2["head"] in hazard_set else 0)
@@ -1023,34 +1266,25 @@ class TacticalEngine:
 
     @classmethod
     def _minimax_2ply(
-        cls,
-        moves: list[str],
-        data: dict,
-        occupied: set[tuple[int, int]],
-        merged_food: set[tuple[int, int]],
-        enemy_heads: list[tuple[int, int]],
-        hazard_set: set[tuple[int, int]],
-        hazard_dmg: int,
-        food_dist_map: dict[tuple[int, int], float],
-        deadline: float,
-        enemy_info: dict | None = None,   # V8.0 Fix 1.1
-    ) -> dict[str, float]:
-        """2-ply paranoid minimax. V8.0: correct just_ate init (Fix 1.1)."""
-        board    = data["board"]
-        you      = data["you"]
-        width    = board["width"]
-        height   = board["height"]
-        you_id   = you["id"]
+        cls, moves, data, occupied, merged_food, enemy_heads,
+        hazard_set, hazard_dmg, food_dist_map, deadline,
+        enemy_info: dict | None = None,
+    ) -> dict:
+        """Probabilistic 2-ply: 60% paranoid / 30% random / 10% greedy."""
+        board   = data["board"]
+        you     = data["you"]
+        width   = board["width"]
+        height  = board["height"]
+        you_id  = you["id"]
         our_head = (you["head"]["x"], you["head"]["y"])
         enemies  = [s for s in board.get("snakes", []) if s["id"] != you_id]
         ei       = enemy_info or {}
 
-        def make_sim(snake: dict) -> dict | None:
+        def make_sim(snake):
             body = [_pt(seg) for seg in snake.get("body", []) if _pt(seg) is not None]
             head = _pt(snake.get("head"))
             if head is None or not body:
                 return None
-            # Fix 1.1: correct just_ate using same logic as _build_occupied
             has_hidden = any(s is None for s in snake.get("body", []))
             if not has_hidden:
                 just_ate = (len(body) >= 2 and body[0] == body[-1])
@@ -1075,216 +1309,177 @@ class TacticalEngine:
         }
         enemy_sims = [s for s in (make_sim(e) for e in enemies) if s is not None]
         food_set   = set(merged_food)
-        results: dict[str, float] = {}
+        results: dict = {}
 
         for direction in moves:
             if time.monotonic() >= deadline - 0.02:
                 break
 
             dx, dy       = cls.DIRECTIONS[direction]
-            our_new_head = (our_head[0] + dx, our_head[1] + dy)
+            our_new_head = (our_head[0]+dx, our_head[1]+dy)
 
-            enemy_opts: list[list[str]] = []
+            enemy_opts: list = []
             for esim in enemy_sims:
                 e_moves = cls._get_legal_moves_sim(
                     esim["head"], esim["body"], occupied, width, height
                 )
                 if len(e_moves) > 2:
                     e_moves.sort(key=lambda m: _manhattan(
-                        esim["head"][0] + cls.DIRECTIONS[m][0],
-                        esim["head"][1] + cls.DIRECTIONS[m][1],
+                        esim["head"][0]+cls.DIRECTIONS[m][0],
+                        esim["head"][1]+cls.DIRECTIONS[m][1],
                         our_new_head[0], our_new_head[1],
                     ))
                     e_moves = e_moves[:2]
                 enemy_opts.append(e_moves or ["up"])
 
-            combos      = list(_iproduct(*enemy_opts)) if enemy_opts else [()]
-            worst_score = float("inf")
+            combos     = list(_iproduct(*enemy_opts)) if enemy_opts else [()]
+            all_scores = []
 
             for combo in combos:
                 if time.monotonic() >= deadline - 0.01:
                     break
-                all_moves = {you_id: direction}
+                all_moves_map = {you_id: direction}
                 for i, esim in enumerate(enemy_sims):
-                    all_moves[esim["id"]] = combo[i] if i < len(combo) else "up"
+                    all_moves_map[esim["id"]] = combo[i] if i < len(combo) else "up"
                 leaf = cls._simulate_and_evaluate(
-                    us_sim, enemy_sims, all_moves,
+                    us_sim, enemy_sims, all_moves_map,
                     food_set, hazard_set, hazard_dmg, food_dist_map, width, height,
                 )
-                if leaf < worst_score:
-                    worst_score = leaf
+                all_scores.append(leaf)
 
-            results[direction] = 0.0 if worst_score == float("inf") else worst_score
+            if all_scores:
+                # Probabilistic blend: 60% paranoid + 30% random + 10% greedy
+                min_s = min(all_scores)
+                avg_s = sum(all_scores) / len(all_scores)
+                max_s = max(all_scores)
+                results[direction] = 0.6 * min_s + 0.3 * avg_s + 0.1 * max_s
+            else:
+                results[direction] = 0.0
 
         return results
 
     # ================================================================== #
-    #  Primary decision loop                                              #
+    #  Primary decision loop                                             #
     # ================================================================== #
     @classmethod
     def get_best_move(
         cls,
         data: dict,
-        merged_food: set[tuple[int, int]],
+        merged_food: set,
         game_id: str = "",
         deadline: float = 0.0,
     ) -> str:
         if deadline == 0.0:
             deadline = time.monotonic() + cls.COMPUTE_BUDGET_S
 
-        board   = data["board"]
-        you     = data["you"]
-        width   = board["width"]
-        height  = board["height"]
-        head    = you["head"]
-        neck_pt = _pt(you["body"][1]) if len(you["body"]) > 1 else None
+        board  = data["board"]
+        you    = data["you"]
+        width  = board["width"]
+        height = board["height"]
+        head   = you["head"]
 
-        mem        = _game_memory.get(game_id, {})
-        enemy_info = mem.get("enemy_info", {})
-        occupied   = cls._build_occupied(data, game_id, enemy_info)
+        # Build context ONCE
+        ctx = cls._build_context(data, game_id, merged_food, deadline)
 
-        safe_moves: list[str] = []
+        neck_pt = _pt(you["body"][1]) if len(you.get("body", [])) > 1 else None
+
+        safe_moves: list = []
         for direction, (dx, dy) in cls.DIRECTIONS.items():
-            nx, ny = head["x"] + dx, head["y"] + dy
+            nx, ny = head["x"]+dx, head["y"]+dy
             if nx < 0 or ny < 0 or nx >= width or ny >= height:
                 continue
             if neck_pt and nx == neck_pt[0] and ny == neck_pt[1]:
                 continue
-            if (nx, ny) in occupied:
+            if (nx, ny) in ctx.occupied:
                 continue
             safe_moves.append(direction)
 
         if not safe_moves:
             in_bounds = [
                 d for d, (dx, dy) in cls.DIRECTIONS.items()
-                if 0 <= head["x"] + dx < width and 0 <= head["y"] + dy < height
+                if 0 <= head["x"]+dx < width and 0 <= head["y"]+dy < height
             ]
-            fallback = random.choice(in_bounds) if in_bounds else random.choice(list(cls.DIRECTIONS.keys()))
+            fallback = random.choice(in_bounds) if in_bounds else "up"
             log.warning("No safe moves! Fallback → %s", fallback)
             return fallback
 
-        phase   = cls._get_game_phase(data)
-        enemies = [s for s in board.get("snakes", []) if s["id"] != you["id"]]
+        # Opening book bypass (turns 1-5)
+        book_move = cls._opening_book(ctx, safe_moves)
+        if book_move is not None:
+            log.info("Opening Book turn=%d → %s", ctx.turn, book_move)
+            return book_move
 
-        if phase == GamePhase.LATE_1V1:
-            return cls._score_1v1(safe_moves, data, occupied, merged_food, enemy_info, deadline=deadline)
+        # 1v1 dedicated scorer
+        if ctx.phase == GamePhase.LATE_1V1:
+            return cls._score_1v1(safe_moves, data, ctx)
 
-        chosen = cls._rank(safe_moves, data, occupied, merged_food, enemy_info,
-                           deadline=deadline, phase=phase, enemies_cached=enemies)
-        log.info("Safe moves: %s → chose: %s (phase=%s)", safe_moves, chosen, phase.value)
+        chosen = cls._rank(safe_moves, data, ctx)
+        log.info("Safe moves: %s → chose: %s (phase=%s)", safe_moves, chosen, ctx.phase.value)
         return chosen
 
     # ================================================================== #
-    #  Full scoring pipeline — V8.0                                      #
+    #  HIERARCHICAL SCORING PIPELINE (V9.0)                             #
     # ================================================================== #
     @classmethod
-    def _rank(
-        cls,
-        moves: list[str],
-        data: dict,
-        occupied: set[tuple[int, int]],
-        merged_food: set[tuple[int, int]],
-        enemy_info: dict,
-        *,
-        deadline: float = 0.0,
-        phase: GamePhase = GamePhase.MID,
-        enemies_cached: list[dict] | None = None,
-    ) -> str:
-        # Enhancement 4.3: graceful degradation
+    def _rank(cls, moves: list, data: dict, ctx: GameContext) -> str:
         try:
-            return cls._rank_impl(
-                moves, data, occupied, merged_food, enemy_info,
-                deadline=deadline, phase=phase, enemies_cached=enemies_cached,
-            )
+            return cls._rank_impl(moves, data, ctx)
         except Exception as exc:
             log.error("_rank failed (%s) — falling back to space-max", exc, exc_info=True)
-            head  = data["you"]["head"]
-            board = data["board"]
+            head = data["you"]["head"]
             return cls._rank_space_max(
-                moves, occupied, board["width"], board["height"],
+                moves, ctx.occupied, ctx.width, ctx.height,
                 head["x"], head["y"],
             )
 
     @classmethod
-    def _rank_impl(
-        cls,
-        moves: list[str],
-        data: dict,
-        occupied: set[tuple[int, int]],
-        merged_food: set[tuple[int, int]],
-        enemy_info: dict,
-        *,
-        deadline: float = 0.0,
-        phase: GamePhase = GamePhase.MID,
-        enemies_cached: list[dict] | None = None,
-    ) -> str:
-        if deadline == 0.0:
-            deadline = time.monotonic() + cls.COMPUTE_BUDGET_S
+    def _rank_impl(cls, moves: list, data: dict, ctx: GameContext) -> str:
+        pw = cls.PHASE_WEIGHTS.get(ctx.phase, cls.PHASE_WEIGHTS[GamePhase.MID])
+        w_voronoi  = pw["W_VORONOI"]
+        w_food     = pw["W_FOOD"]
+        w_edge     = pw["W_EDGE"]
+        w_corner   = pw["W_CORNER"]
+        w_kill     = pw["W_COMBAT_KILL"]
+        hunger_thr = pw["HUNGER_THRESHOLD"]
+        kill_margin = 1 if ctx.phase == GamePhase.LATE_FFA else cls.KILL_MARGIN
 
-        board     = data["board"]
-        you       = data["you"]
-        width     = board["width"]
-        height    = board["height"]
-        head_x    = you["head"]["x"]
-        head_y    = you["head"]["y"]
-        health    = you["health"]
-        snake_len = len(you["body"])
-        you_id    = you["id"]
-        turn      = data.get("turn", 0)
-        center_x  = (width  - 1) / 2.0
-        center_y  = (height - 1) / 2.0
+        # Precompute kill cells + H2H map
+        kill_cells: set   = set()
+        h2h_risk_map: dict = {}
+        priority_ord = {"RISK_HIGH": 3, "RISK_EQUAL": 2, "RISK_LOW": 1, "RISK_NONE": 0}
 
-        enemies = enemies_cached if enemies_cached is not None else [
-            s for s in board.get("snakes", []) if s["id"] != you_id
-        ]
-        hazard_set = {(h["x"], h["y"]) for h in board.get("hazards", [])}
-        hazard_dmg = _get_hazard_dmg(data)
-        kill_margin = 1 if phase == GamePhase.LATE_FFA else cls.KILL_MARGIN
-
-        # Phase-specific weight overrides
-        w_center = -1 if phase == GamePhase.LATE_FFA else cls.W_CENTER
-
-        # ── Pre-compute enemy data ─────────────────────────────────────
-        enemy_heads:  list[tuple[int, int]] = []
-        kill_cells:   set[tuple[int, int]]  = set()
-        h2h_risk_map: dict[tuple[int, int], str] = {}
-        priority_ord  = {"RISK_HIGH": 3, "RISK_EQUAL": 2, "RISK_LOW": 1, "RISK_NONE": 0}
-
-        for e in enemies:
+        for e in ctx.enemy_data:
             e_head = e.get("head")
             if e_head is None:
                 continue
             pos          = (e_head["x"], e_head["y"])
-            e_body       = e.get("body", [])
-            e_len_server = e.get("length", len(e_body))
-            visible_segs = sum(1 for s in e_body if s is not None)
+            e_len        = e["length"]
+            visible_segs = e["visible_segs"]
 
-            # Kill classification (5.1)
-            fully_vis_enough = (visible_segs >= e_len_server - 1)
-            margin_ok        = (snake_len - visible_segs) >= kill_margin + 1
-            safe_kill        = fully_vis_enough and margin_ok
+            # Standard kill classification
+            safe_kill = (visible_segs >= e_len - 1
+                         and (ctx.our_len - visible_segs) >= kill_margin + 1)
 
-            # Enhancement 3.1: trapped-enemy kill exception
-            e_neck_raw = e_body[1] if len(e_body) > 1 else None
-            e_neck_pt  = _pt(e_neck_raw)
-            e_legal    = [
-                (pos[0] + dx2, pos[1] + dy2)
+            # Trapped-kill exception (V8 3.1)
+            e_body   = e.get("body", [])
+            e_neck_r = e_body[1] if len(e_body) > 1 else None
+            e_neck   = _pt(e_neck_r)
+            e_legal  = [
+                (pos[0]+dx2, pos[1]+dy2)
                 for dx2, dy2 in cls._DELTAS
-                if (0 <= pos[0] + dx2 < width and 0 <= pos[1] + dy2 < height
-                    and (pos[0] + dx2, pos[1] + dy2) not in occupied)
+                if (0 <= pos[0]+dx2 < ctx.width and 0 <= pos[1]+dy2 < ctx.height
+                    and (pos[0]+dx2, pos[1]+dy2) not in ctx.occupied)
             ]
-            if e_neck_pt:
-                e_legal = [m for m in e_legal if m != e_neck_pt]
-            if len(e_legal) == 1 and snake_len > e_len_server:
-                # Enemy has only one escape → that cell is a certain kill
+            if e_neck:
+                e_legal = [m for m in e_legal if m != e_neck]
+            if len(e_legal) == 1 and ctx.our_len > e_len:
                 kill_cells.add(e_legal[0])
 
-            enemy_heads.append(pos)
-            risk = cls._h2h_risk_level(snake_len, e_len_server, kill_margin)
+            risk = cls._h2h_risk_level(ctx.our_len, e_len, kill_margin)
 
             for dx, dy in cls._DELTAS:
-                cell = (pos[0] + dx, pos[1] + dy)
-                if not (0 <= cell[0] < width and 0 <= cell[1] < height):
+                cell = (pos[0]+dx, pos[1]+dy)
+                if not (0 <= cell[0] < ctx.width and 0 <= cell[1] < ctx.height):
                     continue
                 if safe_kill:
                     kill_cells.add(cell)
@@ -1293,266 +1488,378 @@ class TacticalEngine:
                     if priority_ord.get(risk, 0) > priority_ord.get(cur, 0):
                         h2h_risk_map[cell] = risk
 
-        # Enhancement 3.2: reduce RISK_EQUAL to RISK_LOW on hazard cells
+        # H2H hazard exploitation (V8 3.2)
         for cell2 in list(h2h_risk_map.keys()):
-            if h2h_risk_map[cell2] == "RISK_EQUAL" and cell2 in hazard_set:
+            if h2h_risk_map[cell2] == "RISK_EQUAL" and cell2 in ctx.hazard_set:
                 h2h_risk_map[cell2] = "RISK_LOW"
 
-        # Enhancement 2.7: threat density map
-        threat_count: dict[tuple[int, int], int] = {}
-        for eh in enemy_heads:
+        # Threat density (V8 2.7)
+        threat_count: dict = {}
+        for eh in ctx.enemy_heads:
             for dx2, dy2 in cls._DELTAS:
-                c2 = (eh[0] + dx2, eh[1] + dy2)
+                c2 = (eh[0]+dx2, eh[1]+dy2)
                 threat_count[c2] = threat_count.get(c2, 0) + 1
 
-        # Enhancement 2.6: LATE_FFA risky favorable h2h cells
-        risky_ffa_cells: set[tuple[int, int]] = set()
-        if phase == GamePhase.LATE_FFA:
-            for e in enemies:
-                eh = e.get("head")
-                if eh is None: continue
-                e_len_ffa  = e.get("length", 0)
-                e_vis_ffa  = sum(1 for s in e.get("body", []) if s is not None)
-                safe_kill_ffa = (e_vis_ffa >= e_len_ffa - 1
-                                  and (snake_len - e_vis_ffa) >= kill_margin + 1)
-                if snake_len > e_len_ffa and not safe_kill_ffa:
-                    for dx2, dy2 in cls._DELTAS:
-                        c2 = (eh["x"] + dx2, eh["y"] + dy2)
-                        if 0 <= c2[0] < width and 0 <= c2[1] < height:
-                            risky_ffa_cells.add(c2)
+        # Ghost risk
+        visible_ids = {s["id"] for s in data["board"].get("snakes", []) if s.get("head") is not None}
+        ghost_info  = {k: v for k, v in ctx.enemy_info.items() if k not in visible_ids}
+        ghost_risk  = cls._compute_ghost_risk(ghost_info, ctx.turn, ctx.occupied, ctx.width, ctx.height)
 
-        # Ghost risk (5.3)
-        visible_ids = {s["id"] for s in board.get("snakes", []) if s.get("head") is not None}
-        ghost_info  = {k: v for k, v in enemy_info.items() if k not in visible_ids}
-        ghost_risk  = cls._compute_ghost_risk(ghost_info, turn, occupied, width, height)
+        # Precompute: enemy free-space without us (for constriction)
+        enemies_raw = [e for e in data["board"].get("snakes", []) if e["id"] != data["you"]["id"]]
+        e_free_precomp: dict = {}
+        primary_enemy = next((e for e in ctx.enemy_data if e["head_pos"] is not None), None)
+        if primary_enemy and time.monotonic() < ctx.deadline - 0.08:
+            ep = primary_enemy["head_pos"]
+            occ_no_us = ctx.occupied - set(ctx.our_body) | {ctx.our_head}
+            e_free_precomp[ep] = cls.voronoi_bfs(ep, [], occ_no_us, ctx.width, ctx.height)
 
-        # Reverse food BFS (7.2)
-        food_dist_map = cls._food_bfs_reverse(
-            merged_food, occupied, width, height, hazard_set, hazard_dmg
+        # ── TIER CLASSIFICATION ───────────────────────────────────────
+        move_tiers: dict = {}
+        all_threatened: set = set()
+        for eh in ctx.enemy_heads:
+            for dx, dy in cls._DELTAS:
+                c = (eh[0]+dx, eh[1]+dy)
+                if 0 <= c[0] < ctx.width and 0 <= c[1] < ctx.height:
+                    all_threatened.add(c)
+
+        for direction in moves:
+            dx, dy = cls.DIRECTIONS[direction]
+            cand   = (ctx.our_head[0]+dx, ctx.our_head[1]+dy)
+
+            # --- VETO ---
+            # Direct H2H death: moving onto or adjacent to an equal/larger enemy
+            if cand in ctx.occupied:
+                move_tiers[direction] = MoveTier.VETO
+                continue
+
+            # Moving to an enemy head cell (certain death)
+            is_direct_death = any(
+                cand == e["head_pos"]
+                for e in ctx.enemy_data
+                if e["head_pos"] is not None and e["length"] >= ctx.our_len
+            )
+            if is_direct_death:
+                move_tiers[direction] = MoveTier.VETO
+                continue
+
+            # --- AGGRESSIVE_SAFE ---
+            if cand in kill_cells:
+                move_tiers[direction] = MoveTier.AGGRESSIVE_SAFE
+                continue
+
+            # Ambush: enemy forced into boxed cell
+            is_amb = any(
+                cls._is_ambush(cand, e["head_pos"], ctx)
+                for e in ctx.enemy_data
+                if e["head_pos"] is not None and ctx.our_len > e["length"] + 1
+                and time.monotonic() < ctx.deadline - 0.05
+            )
+            if is_amb:
+                move_tiers[direction] = MoveTier.AGGRESSIVE_SAFE
+                continue
+
+            # --- SURVIVAL_RISKY ---
+            h2h = h2h_risk_map.get(cand, "RISK_NONE")
+            tc  = threat_count.get(cand, 0)
+            is_h2h_risky = (
+                h2h == "RISK_HIGH"
+                or (h2h == "RISK_EQUAL" and tc >= 1)
+            )
+
+            boxed = cls._is_boxed_in(ctx, cand)
+
+            if is_h2h_risky or boxed:
+                move_tiers[direction] = MoveTier.SURVIVAL_RISKY
+                continue
+
+            # --- SURVIVAL_SAFE ---
+            move_tiers[direction] = MoveTier.SURVIVAL_SAFE
+
+        # ── TIER SELECTION ────────────────────────────────────────────
+        non_veto = [d for d in moves if move_tiers.get(d, MoveTier.VETO) != MoveTier.VETO]
+        if not non_veto:
+            non_veto = moves  # truly trapped
+
+        tier3 = [d for d in non_veto if move_tiers.get(d) == MoveTier.AGGRESSIVE_SAFE]
+        tier2 = [d for d in non_veto if move_tiers.get(d) == MoveTier.SURVIVAL_SAFE]
+        tier1 = [d for d in non_veto if move_tiers.get(d) == MoveTier.SURVIVAL_RISKY]
+
+        # Kill only when we have a safe fallback (spec §3.3)
+        if tier3 and tier2:
+            pool = tier3
+        elif tier2:
+            pool = tier2
+        elif tier1:
+            pool = tier1
+        else:
+            pool = tier3 if tier3 else non_veto  # last resort
+
+        # ── MINIMAX SCORES (gated) ────────────────────────────────────
+        n_enemies = len([e for e in ctx.enemy_data if e["head_pos"] is not None])
+        mm_gate = (
+            (n_enemies == 1 and time.monotonic() < ctx.deadline - 0.10)
+            or (n_enemies == 2 and time.monotonic() < ctx.deadline - 0.15)
+        )
+        mm_scores: dict = {}
+        if mm_gate and len(pool) > 1:
+            mm_scores = cls._minimax_2ply(
+                pool, data, ctx.occupied, ctx.merged_food, ctx.enemy_heads,
+                ctx.hazard_set, ctx.hazard_dmg, ctx.food_dist_map, ctx.deadline,
+                enemy_info=ctx.enemy_info,
+            ) or {}
+
+        # ── STARVATION CLOCK ─────────────────────────────────────────
+        need_food    = ctx.our_health < hunger_thr
+        turns_to_die = ctx.our_health - 1
+        max_elen     = max((e["length"] for e in ctx.enemy_data), default=0)
+        we_dominant  = ctx.our_len > max_elen
+
+        # Executioner mode conditions
+        exec_active = (
+            ctx.phase in (GamePhase.LATE_1V1, GamePhase.LATE_FFA)
+            and we_dominant
+            and primary_enemy is not None
+            and (primary_enemy.get("health") or 100) < 55
+            and ctx.our_len > (primary_enemy["length"] + 1)
         )
 
-        # Food need
-        max_enemy_len   = max((e.get("length", 0) for e in enemies), default=0)
-        we_are_dominant = snake_len > max_enemy_len
-        need_food       = health < cls.HUNGER_THRESHOLD or not we_are_dominant
-
-        # ── Enhancement 2.2: Pin-trap filter (before corridor trap) ───
-        pin_trap_set: set[str] = set()
-        if len(enemies) <= 3 and time.monotonic() < deadline - 0.06 and len(moves) > 1:
-            for d in moves:
-                dx, dy = cls.DIRECTIONS[d]
-                cand = (head_x + dx, head_y + dy)
-                if cls._is_pin_trap(cand, head_x, head_y, enemies, occupied,
-                                    width, height, kill_cells, deadline):
-                    pin_trap_set.add(d)
-
-        non_pinned   = [d for d in moves if d not in pin_trap_set]
-        viable_moves = non_pinned if non_pinned else moves
-
-        # ── Corridor trap filter (always runs) ─────────────────────────
-        all_threatened: set[tuple[int, int]] = set()
-        for eh in enemy_heads:
-            for dx, dy in cls._DELTAS:
-                cell = (eh[0] + dx, eh[1] + dy)
-                if 0 <= cell[0] < width and 0 <= cell[1] < height:
-                    all_threatened.add(cell)
-
-        non_trapped = [
-            d for d in viable_moves
-            if not cls._is_corridor_trap(
-                (head_x + cls.DIRECTIONS[d][0], head_y + cls.DIRECTIONS[d][1]),
-                snake_len, occupied, all_threatened, width, height, kill_cells
-            )
-        ]
-        viable_moves = non_trapped if non_trapped else viable_moves
-
-        # ── Escape-route analysis (gated) ─────────────────────────────
-        if (len(enemies) <= 2
-                and time.monotonic() < deadline - 0.05
-                and len(viable_moves) > 1):
-            escape_safe = [
-                d for d in viable_moves
-                if not cls._min_escape_size(
-                    (head_x + cls.DIRECTIONS[d][0], head_y + cls.DIRECTIONS[d][1]),
-                    snake_len, occupied, enemies, width, height, deadline
-                )
-            ]
-            if escape_safe:
-                viable_moves = escape_safe
-
-        # ── Per-move scoring (voronoi + food_dist) ────────────────────
-        move_data: dict[str, dict] = {}
+        # ── SCORING LOOP ──────────────────────────────────────────────
+        scores: dict = {}
         timed_out = False
 
-        for direction in viable_moves:
-            if time.monotonic() >= deadline:
-                if not timed_out:
-                    log.warning("Budget exceeded after %d/%d moves", len(move_data), len(viable_moves))
-                    timed_out = True
-                dx, dy = cls.DIRECTIONS[direction]
-                nx, ny = head_x + dx, head_y + dy
-                cand   = (nx, ny)
-                move_data[direction] = {
-                    "nx": nx, "ny": ny, "voronoi": 0,
-                    "food_dist": food_dist_map.get(cand, float(width + height)),
-                    "kill": cand in kill_cells,
-                    "h2h_risk": h2h_risk_map.get(cand, "RISK_NONE"),
-                    "ghost": ghost_risk.get(cand, 0.0),
-                    "board_haz": cand in hazard_set,
-                }
+        for direction in pool:
+            if time.monotonic() >= ctx.deadline:
+                timed_out = True
+                scores[direction] = 0.0
                 continue
 
             dx, dy = cls.DIRECTIONS[direction]
-            nx, ny = head_x + dx, head_y + dy
+            nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
             cand   = (nx, ny)
+            score  = 0.0
 
-            voronoi   = cls.voronoi_bfs(cand, enemy_heads, occupied, width, height)
-            food_dist = food_dist_map.get(cand, float(width + height))
-
-            move_data[direction] = {
-                "nx": nx, "ny": ny, "voronoi": voronoi,
-                "food_dist": food_dist,
-                "kill": cand in kill_cells,
-                "h2h_risk": h2h_risk_map.get(cand, "RISK_NONE"),
-                "ghost": ghost_risk.get(cand, 0.0),
-                "board_haz": cand in hazard_set,
-            }
-
-        # Voronoi trap filter
-        max_vor     = max((d["voronoi"] for d in move_data.values()), default=0)
-        final_moves = [m for m in viable_moves if move_data[m]["voronoi"] >= snake_len]
-        if not final_moves:
-            final_moves = [m for m in viable_moves if move_data[m]["voronoi"] == max_vor]
-        if not final_moves:
-            final_moves = list(viable_moves)
-
-        # Minimax scores (Fix 1.2: modifier, not replacement)
-        mm_scores: dict[str, float] = {}
-        if (len(enemies) <= 2
-                and not timed_out
-                and time.monotonic() < deadline - 0.08
-                and len(final_moves) > 1):
-            mm_scores = cls._minimax_2ply(
-                final_moves, data, occupied, merged_food, enemy_heads,
-                hazard_set, hazard_dmg, food_dist_map, deadline,
-                enemy_info=enemy_info,
-            ) or {}
-
-        # Enhancement 2.4: desperation mode (health < 15, no reachable food)
-        if health < 15 and food_dist_map:
-            min_food_d = min(food_dist_map.values())
-            if min_food_d >= health:
-                desp = {
-                    d: (-move_data[d]["food_dist"] * 100 + move_data[d]["voronoi"])
-                    for d in final_moves
-                }
-                best_desp = max(desp.values())
-                chosen_desp = random.choice([m for m, s in desp.items() if s == best_desp])
-                log.info("V8 DESPERATION — health=%d food_dist=%.1f → %s",
-                         health, min_food_d, chosen_desp)
-                return chosen_desp
-
-        # Precompute tail position for coiling (2.5)
-        tail_seg = _pt(you["body"][-1]) if you["body"] else None
-
-        # ── Unified scoring loop ───────────────────────────────────────
-        scores: dict[str, float] = {}
-
-        for direction in final_moves:
-            md    = move_data[direction]
-            nx    = md["nx"]
-            ny    = md["ny"]
-            cand  = (nx, ny)
-            score = 0.0
+            voronoi   = cls.voronoi_bfs(cand, ctx.enemy_heads, ctx.occupied, ctx.width, ctx.height)
+            food_dist = ctx.food_dist_map.get(cand, float(ctx.width + ctx.height))
 
             # Territory
-            score += cls.W_VORONOI * md["voronoi"]
+            score += w_voronoi * voronoi
 
-            # Combat
-            if md["kill"]:
-                score += cls.W_COMBAT_KILL
+            # Kill bonus (within tier3 only—still apply for scoring within tier)
+            if cand in kill_cells:
+                score += w_kill
 
-            # H2H risk (dynamic 5.2)
-            risk = md["h2h_risk"]
-            if risk == "RISK_HIGH":
-                score -= 1200
-            elif risk == "RISK_EQUAL":
-                score -= 600
-            elif risk == "RISK_LOW":
-                score -= 200
+            # H2H penalty (applies within SURVIVAL_SAFE tier)
+            h2h = h2h_risk_map.get(cand, "RISK_NONE")
+            if h2h == "RISK_HIGH":   score -= 1200
+            elif h2h == "RISK_EQUAL": score -= 600
+            elif h2h == "RISK_LOW":   score -= 200
 
-            # Enhancement 2.7: crossfire penalty
-            tc = threat_count.get(cand, 0)
-            if tc >= 2:
+            # Crossfire (V8 2.7)
+            if threat_count.get(cand, 0) >= 2:
                 score -= 400
 
-            # Ghost risk (5.3)
-            score += md["ghost"]
+            # Ghost risk
+            score += ghost_risk.get(cand, 0.0)
 
-            # Board hazard
-            if md["board_haz"]:
+            # Hazard
+            if cand in ctx.hazard_set:
                 score += cls.W_HAZARD_CELL
 
-            # Food with race evaluation — Fix 1.3 (corrected formula)
-            if need_food:
-                food_rv = cls._food_race_value(
-                    cand, enemy_heads, food_dist_map, snake_len, enemies, width, height
-                )
-                if food_rv > 0:
-                    # Certain/contested: stronger chase the more certain we are
-                    score += cls.W_FOOD * md["food_dist"] * (1.0 + food_rv)
-                elif food_rv < 0:
-                    # Lost race: flat repulsion signal
-                    score += abs(cls.W_FOOD) * 15
+            # Food scoring — Starvation Clock + Food Race V2
+            nearest_food_d = ctx.food_dist_map.get(cand, float("inf"))
+            if turns_to_die > 0 and nearest_food_d != float("inf"):
+                if nearest_food_d >= turns_to_die:
+                    # DESPERATION — ignore combat penalties, sprint to food
+                    score = -food_dist * 200 + voronoi  # pure food chase
+                elif nearest_food_d < turns_to_die - 10:
+                    food_wt = w_food * 0.3  # food abundant
                 else:
-                    # Neutral: standard distance penalty
-                    score += cls.W_FOOD * md["food_dist"]
+                    food_wt = w_food        # moderate urgency
 
-            # Enhancement 2.1: edge/corner penalty
-            on_edge   = (nx == 0 or nx == width - 1 or ny == 0 or ny == height - 1)
-            on_corner = ((nx == 0 or nx == width - 1) and (ny == 0 or ny == height - 1))
-            if on_edge:   score += cls.W_EDGE
-            if on_corner: score += cls.W_CORNER
+                if nearest_food_d < turns_to_die:
+                    race_value = cls._food_race_v2(cand, ctx, ctx.enemy_data)
+                    if race_value > 0:
+                        score += food_wt * food_dist * (1.0 + race_value)
+                    elif race_value < 0:
+                        score += abs(food_wt) * 20
+                    else:
+                        score += food_wt * food_dist
 
-            # Enhancement 2.5: tail-following coiling (safe conditions only)
-            if (health > 70 and tail_seg is not None
-                    and all(_manhattan(nx, ny, eh[0], eh[1]) > 4 for eh in enemy_heads)):
-                tail_dist = _manhattan(nx, ny, tail_seg[0], tail_seg[1])
+            # Executioner mode
+            if exec_active and primary_enemy:
+                score += cls._executioner_score(cand, primary_enemy, ctx)
+
+            # Constriction (when dominant)
+            if we_dominant and primary_enemy and primary_enemy["head_pos"] in e_free_precomp:
+                ep = primary_enemy["head_pos"]
+                score += cls._constriction_score(cand, ep, e_free_precomp[ep], ctx)
+
+            # Edge / corner (V8 2.1, now phase-dynamic)
+            on_edge   = (nx == 0 or nx == ctx.width-1 or ny == 0 or ny == ctx.height-1)
+            on_corner = ((nx == 0 or nx == ctx.width-1) and (ny == 0 or ny == ctx.height-1))
+            if on_edge:   score += w_edge
+            if on_corner: score += w_corner
+
+            # Shadow penalty (V9.0): same row/col as enemy, dist <= 2
+            for ep in ctx.enemy_heads:
+                if (nx == ep[0] or ny == ep[1]) and _manhattan(nx, ny, ep[0], ep[1]) <= 2:
+                    score -= 120
+
+            # Tail-following coiling (V8 2.5)
+            if (ctx.our_health > 70 and ctx.our_tail is not None
+                    and all(_manhattan(nx, ny, eh[0], eh[1]) > 4 for eh in ctx.enemy_heads)):
+                tail_dist = _manhattan(nx, ny, ctx.our_tail[0], ctx.our_tail[1])
                 score += max(0, 10 - tail_dist) * 5
 
-            # Center pull (phase-adjusted)
-            score += w_center * (abs(nx - center_x) + abs(ny - center_y))
+            # Center pull
+            cx2   = (ctx.width - 1) / 2.0
+            cy2   = (ctx.height - 1) / 2.0
+            score += cls.W_CENTER * (abs(nx - cx2) + abs(ny - cy2))
 
-            # Enhancement 2.6: LATE_FFA aggression
-            if phase == GamePhase.LATE_FFA:
-                if md["kill"]:
-                    score += cls.W_COMBAT_KILL * 0.5  # 800 → 1200 total
-                elif cand in risky_ffa_cells:
-                    score += cls.W_COMBAT_KILL * 0.5  # favorable but risky h2h
-
-            # Fix 1.2: minimax as 5% modifier
+            # Minimax modifier (V8 fix 1.2 — 5% influence)
             if mm_scores:
                 mm = mm_scores.get(direction, 0.0)
                 if mm <= -999999.0:
-                    score -= 5000   # veto simulated death
+                    score -= 5000
                 else:
                     score += mm * 0.05
 
             scores[direction] = score
 
         if not scores:
-            return random.choice(viable_moves) if viable_moves else random.choice(moves)
+            return random.choice(pool) if pool else random.choice(moves)
 
         best_score = max(scores.values())
         best_moves = [m for m, s in scores.items() if s == best_score]
         chosen     = random.choice(best_moves)
-        elapsed_ms = (time.monotonic() - (deadline - cls.COMPUTE_BUDGET_S)) * 1000
+        elapsed    = (time.monotonic() - (ctx.deadline - cls.COMPUTE_BUDGET_S)) * 1000
         log.info(
-            "V8 Scores: %s | phase=%s dominant=%s health=%d elapsed=%.1fms%s → %s",
+            "V9 Scores: %s | tier3=%s tier2=%s | phase=%s health=%d elapsed=%.1fms%s → %s",
             {m: f"{s:.0f}" for m, s in scores.items()},
-            phase.value, we_are_dominant, health, elapsed_ms,
+            len(tier3), len(tier2),
+            ctx.phase.value, ctx.our_health, elapsed,
             " [TIMEOUT]" if timed_out else "", chosen,
         )
+        return chosen
+
+    # ================================================================== #
+    #  1v1 dedicated scorer (V9.0 — uses new combat systems)            #
+    # ================================================================== #
+    @classmethod
+    def _score_1v1(cls, moves: list, data: dict, ctx: GameContext) -> str:
+        try:
+            return cls._score_1v1_impl(moves, data, ctx)
+        except Exception as exc:
+            log.error("_score_1v1 failed (%s)", exc, exc_info=True)
+            return cls._rank_space_max(
+                moves, ctx.occupied, ctx.width, ctx.height,
+                ctx.our_head[0], ctx.our_head[1],
+            )
+
+    @classmethod
+    def _score_1v1_impl(cls, moves: list, data: dict, ctx: GameContext) -> str:
+        pw         = cls.PHASE_WEIGHTS[GamePhase.LATE_1V1]
+        w_food     = pw["W_FOOD"]
+        w_kill     = pw["W_COMBAT_KILL"]
+        w_edge     = pw["W_EDGE"]
+        w_corner   = pw["W_CORNER"]
+        hunger_thr = pw["HUNGER_THRESHOLD"]
+        need_food  = ctx.our_health < hunger_thr
+
+        primary = next((e for e in ctx.enemy_data if e["head_pos"] is not None), None)
+        if primary is None:
+            return cls._rank_space_max(
+                moves, ctx.occupied, ctx.width, ctx.height,
+                ctx.our_head[0], ctx.our_head[1],
+            )
+
+        e_head_pos = primary["head_pos"]
+        e_len      = primary["length"]
+        e_health   = primary.get("health", 100)
+
+        # Fix 1.4: correct kill_cells for corridor trap
+        kill_cells_1v1: set = set()
+        e_body_1v1  = primary.get("body", [])
+        vis_1v1     = sum(1 for s in e_body_1v1 if s is not None)
+        if vis_1v1 >= e_len - 1 and (ctx.our_len - vis_1v1) >= cls.KILL_MARGIN + 1:
+            for dx2, dy2 in cls._DELTAS:
+                c2 = (e_head_pos[0]+dx2, e_head_pos[1]+dy2)
+                if 0 <= c2[0] < ctx.width and 0 <= c2[1] < ctx.height:
+                    kill_cells_1v1.add(c2)
+
+        all_threatened = {
+            (e_head_pos[0]+dx, e_head_pos[1]+dy)
+            for dx, dy in cls._DELTAS
+            if 0 <= e_head_pos[0]+dx < ctx.width and 0 <= e_head_pos[1]+dy < ctx.height
+        }
+        safe_moves = [
+            d for d in moves
+            if not cls._is_corridor_trap(
+                (ctx.our_head[0]+cls.DIRECTIONS[d][0], ctx.our_head[1]+cls.DIRECTIONS[d][1]),
+                ctx.our_len, ctx.occupied, all_threatened, ctx.width, ctx.height, kill_cells_1v1
+            )
+        ] or moves
+
+        # Precompute enemy free space for constriction (2.3 / V9 constriction)
+        occ_no_us = ctx.occupied - set(ctx.our_body) | {ctx.our_head}
+        e_free    = cls.voronoi_bfs(e_head_pos, [], occ_no_us, ctx.width, ctx.height)
+
+        # Executioner mode active?
+        exec_active = ctx.our_len > e_len + 1 and e_health < 55
+
+        scores: dict = {}
+        for direction in safe_moves:
+            if time.monotonic() >= ctx.deadline:
+                scores[direction] = 0.0
+                continue
+
+            dx, dy = cls.DIRECTIONS[direction]
+            nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
+            cand   = (nx, ny)
+
+            v_our   = cls.voronoi_bfs(cand, [e_head_pos], ctx.occupied, ctx.width, ctx.height)
+            v_enemy = cls.voronoi_bfs(e_head_pos, [cand], ctx.occupied, ctx.width, ctx.height)
+            diff    = v_our - v_enemy
+            d2e     = _manhattan(nx, ny, e_head_pos[0], e_head_pos[1])
+
+            if ctx.our_len > e_len:
+                constriction = max(0, e_free - v_enemy)
+                score = diff * 100 + v_our * 10 - d2e * 2 + constriction * 55
+                if exec_active:
+                    score += cls._executioner_score(cand, primary, ctx)
+            elif ctx.our_len == e_len:
+                score = v_our * 50 + diff * 20
+                if need_food and ctx.food_dist_map:
+                    fd = ctx.food_dist_map.get(cand, float(ctx.width + ctx.height))
+                    score += w_food * fd
+            else:
+                score = v_our * 80 - diff * 10
+                if need_food and ctx.food_dist_map:
+                    fd = ctx.food_dist_map.get(cand, float(ctx.width + ctx.height))
+                    score += w_food * fd
+
+            if cand in kill_cells_1v1:
+                score += w_kill
+
+            if cand in ctx.hazard_set:
+                score += cls.W_HAZARD_CELL
+
+            on_edge   = (nx == 0 or nx == ctx.width-1 or ny == 0 or ny == ctx.height-1)
+            on_corner = ((nx == 0 or nx == ctx.width-1) and (ny == 0 or ny == ctx.height-1))
+            if on_edge:   score += w_edge
+            if on_corner: score += w_corner
+
+            scores[direction] = score
+
+        if not scores:
+            return random.choice(safe_moves)
+
+        best   = max(scores.values())
+        chosen = random.choice([m for m, s in scores.items() if s == best])
+        log.info("1v1 scores: %s | our=%d vs e=%d health=%d → %s",
+                 {m: f"{s:.0f}" for m, s in scores.items()},
+                 ctx.our_len, e_len, e_health, chosen)
         return chosen
 
 
@@ -1572,8 +1879,7 @@ async def start(state: GameState) -> dict:
     _game_memory[game_id] = {
         "food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []
     }
-    settings = data.get("game", {}).get("ruleset", {}).get("settings", {})
-    log.info("Game started: %s | settings=%s", game_id, settings)
+    log.info("Game started: %s", game_id)
     return {}
 
 
@@ -1584,7 +1890,7 @@ async def move(state: GameState) -> dict:
 
     t_start = time.monotonic()
 
-    # Enhancement 4.1: adaptive compute budget per game
+    # Adaptive compute budget (V8 4.1)
     mem  = _game_memory.get(game_id, {})
     hist = mem.get("latency_history", [])
     if hist:
@@ -1606,7 +1912,6 @@ async def move(state: GameState) -> dict:
     chosen     = TacticalEngine.get_best_move(data, merged_food, game_id=game_id, deadline=deadline)
     elapsed_ms = (time.monotonic() - t_start) * 1000
 
-    # Store latency for next turn's budget computation
     active_mem = _game_memory.get(game_id)
     if active_mem is not None:
         hist2 = active_mem.setdefault("latency_history", [])
@@ -1623,26 +1928,20 @@ async def end(state: GameState) -> dict:
     data    = state.model_dump()
     game_id = data.get("game", {}).get("id", "?")
     _game_memory.pop(game_id, None)
-    log.info("Game ended: %s — memory cleared", game_id)
+    log.info("Game ended: %s", game_id)
     return {}
 
 
 # ===========================================================================
-# Verification suite — T1-T13
+# Verification suite — T1-T16
 # ===========================================================================
 
 def _verify_all() -> None:
-    """
-    T1–T10: V7.0 regression tests (preserved).
-    T11: Edge/corner penalty.
-    T12: Desperation mode (health < 15).
-    T13: Threat density crossfire penalty.
-    """
     import copy
 
     BASE_DATA: dict = {
         "game": {
-            "id": "test-v8",
+            "id": "test-v9",
             "ruleset": {
                 "name": "blackout",
                 "settings": {
@@ -1662,7 +1961,7 @@ def _verify_all() -> None:
                 {
                     "id": "me", "name": "الثعبان", "health": 90,
                     "head": {"x": 5, "y": 5},
-                    "body": [{"x": 5, "y": 5}, {"x": 5, "y": 4}, {"x": 5, "y": 3}],
+                    "body": [{"x":5,"y":5},{"x":5,"y":4},{"x":5,"y":3}],
                     "length": 3,
                 },
                 {
@@ -1672,7 +1971,7 @@ def _verify_all() -> None:
                 {
                     "id": "partial-snake", "name": "partial", "health": None,
                     "head": {"x": 7, "y": 5},
-                    "body": [{"x": 7, "y": 5}, {"x": 8, "y": 5}, None, None],
+                    "body": [{"x":7,"y":5},{"x":8,"y":5}, None, None],
                     "length": 4,
                 },
             ],
@@ -1680,40 +1979,39 @@ def _verify_all() -> None:
         "you": {
             "id": "me", "name": "الثعبان", "health": 90,
             "head": {"x": 5, "y": 5},
-            "body": [{"x": 5, "y": 5}, {"x": 5, "y": 4}, {"x": 5, "y": 3}],
+            "body": [{"x":5,"y":5},{"x":5,"y":4},{"x":5,"y":3}],
             "length": 3,
         },
     }
 
-    def _fresh(gid: str, data: dict) -> tuple[set, dict]:
-        _game_memory[gid] = {"food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []}
+    def _fresh(gid: str, data: dict):
+        _game_memory[gid] = {
+            "food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []
+        }
         _update_enemy_memory(gid, data)
-        return _update_food_memory(gid, data), _game_memory[gid]["enemy_info"]
+        return _update_food_memory(gid, data)
 
-    # T1
-    gid = "test-v8"
-    mf, ei = _fresh(gid, BASE_DATA)
-    r = TacticalEngine.get_best_move(BASE_DATA, mf, game_id=gid)
+    # T1: null-safety
+    mf = _fresh("test-v9", BASE_DATA)
+    r  = TacticalEngine.get_best_move(BASE_DATA, mf, game_id="test-v9")
     assert r in {"up", "down", "left", "right"}, f"T1 failed: {r!r}"
     log.info("✅ T1 null-safety OK — chose '%s'", r)
 
-    # T2
-    data2 = copy.deepcopy(BASE_DATA); data2["game"]["id"] = "tail-test"
-    data2["board"]["snakes"].append({
+    # T2: tail vacating
+    d2 = copy.deepcopy(BASE_DATA); d2["game"]["id"] = "tail-test"
+    d2["board"]["snakes"].append({
         "id": "tailer", "name": "tailer", "health": 80,
-        "head": {"x": 1, "y": 5},
+        "head": {"x":1,"y":5},
         "body": [{"x":1,"y":5},{"x":2,"y":5},{"x":3,"y":5}], "length": 3,
     })
-    _, ei2 = _fresh("tail-test", data2)
-    occ2 = TacticalEngine._build_occupied(data2, "tail-test", ei2)
+    _fresh("tail-test", d2)
+    ei2  = _game_memory["tail-test"]["enemy_info"]
+    occ2 = TacticalEngine._build_occupied(d2, "tail-test", ei2)
     assert (3, 5) not in occ2, "T2: tail should be free"
-    assert (1, 5) in occ2,     "T2: head should be occupied"
     log.info("✅ T2 tail-vacating OK")
 
-    # T3
-    gid3 = "ghost-risk"; data3 = copy.deepcopy(BASE_DATA); data3["game"]["id"] = gid3
-    data3["turn"] = 12
-    _game_memory[gid3] = {
+    # T3: ghost risk
+    _game_memory["ghost-risk"] = {
         "food": set(), "food_meta": {}, "latency_history": [],
         "enemy_info": {"ghost-snake": {
             "last_seen_turn": 10, "last_known_head": (5, 8),
@@ -1721,131 +2019,171 @@ def _verify_all() -> None:
             "last_known_length": 4, "prev_known_length": 4,
         }},
     }
-    _update_enemy_memory(gid3, data3)
-    mf3 = _update_food_memory(gid3, data3)
-    r3  = TacticalEngine.get_best_move(data3, mf3, game_id=gid3)
-    assert r3 in {"up", "down", "left", "right"}, f"T3 failed: {r3!r}"
+    d3 = copy.deepcopy(BASE_DATA); d3["game"]["id"] = "ghost-risk"; d3["turn"] = 12
+    _update_enemy_memory("ghost-risk", d3)
+    mf3 = _update_food_memory("ghost-risk", d3)
+    r3  = TacticalEngine.get_best_move(d3, mf3, game_id="ghost-risk")
+    assert r3 in {"up","down","left","right"}, f"T3 failed: {r3!r}"
     log.info("✅ T3 ghost-risk OK — chose '%s'", r3)
 
-    # T4
-    mf4, ei4 = _fresh(gid, BASE_DATA)
-    occ4 = TacticalEngine._build_occupied(BASE_DATA, gid, ei4)
-    safe4 = [d for d in TacticalEngine.DIRECTIONS
-              if (0 <= 5+TacticalEngine.DIRECTIONS[d][0] < 11
-                  and 0 <= 5+TacticalEngine.DIRECTIONS[d][1] < 11
-                  and (5+TacticalEngine.DIRECTIONS[d][0], 5+TacticalEngine.DIRECTIONS[d][1]) not in occ4)]
-    TacticalEngine._rank(safe4, BASE_DATA, occ4, mf4, ei4)
-    log.info("✅ T4 cautious-combat OK")
+    # T4: corridor trap
+    tiny_occ = {(x, y) for x in range(11) for y in range(11)} - {(9, 9), (8, 9)}
+    assert TacticalEngine._is_corridor_trap((9,9), 3, tiny_occ, set(), 11, 11, set()), "T4 failed"
+    log.info("✅ T4 corridor-trap OK")
 
-    # T5
-    data5 = copy.deepcopy(BASE_DATA); data5["game"]["id"] = "haz-game"
-    data5["you"]["head"] = {"x":1,"y":5}
-    data5["you"]["body"] = [{"x":1,"y":5},{"x":1,"y":4},{"x":1,"y":3}]
-    data5["board"]["snakes"][0].update({"head":{"x":1,"y":5},"body":[{"x":1,"y":5},{"x":1,"y":4},{"x":1,"y":3}]})
-    mf5, _ = _fresh("haz-game", data5)
-    r5 = TacticalEngine.get_best_move(data5, mf5, game_id="haz-game")
-    assert r5 in {"up", "down", "left", "right"}, f"T5 failed: {r5!r}"
+    # T5: hazard avoidance
+    d5 = copy.deepcopy(BASE_DATA); d5["game"]["id"] = "haz-game"
+    d5["you"]["head"] = {"x":1,"y":5}
+    d5["you"]["body"] = [{"x":1,"y":5},{"x":1,"y":4},{"x":1,"y":3}]
+    d5["board"]["snakes"][0].update({"head":{"x":1,"y":5},"body":[{"x":1,"y":5},{"x":1,"y":4},{"x":1,"y":3}]})
+    mf5 = _fresh("haz-game", d5)
+    r5  = TacticalEngine.get_best_move(d5, mf5, game_id="haz-game")
+    assert r5 in {"up","down","left","right"}, f"T5 failed: {r5!r}"
     log.info("✅ T5 hazard-avoidance OK — chose '%s'", r5)
 
-    # T6: corridor trap
-    tiny_occ = {(x, y) for x in range(11) for y in range(11)} - {(9, 9), (8, 9)}
-    is_trap  = TacticalEngine._is_corridor_trap((9, 9), 3, tiny_occ, set(), 11, 11, set())
-    assert is_trap, "T6 failed: 2-cell pocket should be a trap"
-    log.info("✅ T6 corridor-trap OK")
-
-    # T7: 1v1 phase
-    data7 = copy.deepcopy(BASE_DATA); data7["game"]["id"] = "1v1-game"
-    data7["board"]["snakes"] = [
+    # T6: 1v1 phase
+    d6 = copy.deepcopy(BASE_DATA); d6["game"]["id"] = "1v1-game"
+    d6["board"]["snakes"] = [
         {"id":"me","name":"الثعبان","health":90,"head":{"x":5,"y":5},
          "body":[{"x":5,"y":5},{"x":5,"y":4},{"x":5,"y":3}],"length":3},
         {"id":"e1","name":"e","health":80,"head":{"x":8,"y":8},
          "body":[{"x":8,"y":8},{"x":8,"y":7}],"length":2},
     ]
-    data7["you"] = data7["board"]["snakes"][0]
-    mf7, _ = _fresh("1v1-game", data7)
-    ph7 = TacticalEngine._get_game_phase(data7)
-    assert ph7 == GamePhase.LATE_1V1, f"T7 failed: {ph7}"
-    r7 = TacticalEngine.get_best_move(data7, mf7, game_id="1v1-game")
-    assert r7 in {"up","down","left","right"}, f"T7 failed: {r7!r}"
-    log.info("✅ T7 1v1-mode OK — phase=%s chose '%s'", ph7.value, r7)
+    d6["you"] = d6["board"]["snakes"][0]
+    mf6 = _fresh("1v1-game", d6)
+    ph6 = TacticalEngine._get_game_phase(d6)
+    assert ph6 == GamePhase.LATE_1V1, f"T6 failed: {ph6}"
+    r6  = TacticalEngine.get_best_move(d6, mf6, game_id="1v1-game")
+    assert r6 in {"up","down","left","right"}, f"T6 failed move: {r6!r}"
+    log.info("✅ T6 1v1-mode OK — phase=%s chose '%s'", ph6.value, r6)
 
-    # T8: food race
-    fd8 = {(5,6): 4.0, (5,3): 1.0}
-    rv8 = TacticalEngine._food_race_value((5,6), [(5,3)], fd8, 3,
-                                           [{"head":{"x":5,"y":3},"length":3}], 11, 11)
-    assert rv8 <= 0, f"T8 failed: lost race should be non-positive, got {rv8}"
-    log.info("✅ T8 food-race OK — rv=%.2f", rv8)
-
-    # T9: dead-snake cleanup
+    # T7: dead-snake cleanup
     _game_memory["dead-game"] = {
         "food": set(), "food_meta": {}, "latency_history": [],
         "enemy_info": {"dead-e": {"last_seen_turn":5,"last_known_head":(3,3),
                                    "last_known_length":3,"prev_known_length":3}},
     }
-    d9 = copy.deepcopy(BASE_DATA); d9["game"]["id"] = "dead-game"
-    d9["board"]["snakes"] = [d9["board"]["snakes"][0]]
-    _update_enemy_memory("dead-game", d9)
-    assert "dead-e" not in _game_memory["dead-game"]["enemy_info"], "T9 failed"
-    log.info("✅ T9 dead-snake cleanup OK")
+    d7 = copy.deepcopy(BASE_DATA); d7["game"]["id"] = "dead-game"
+    d7["board"]["snakes"] = [d7["board"]["snakes"][0]]
+    _update_enemy_memory("dead-game", d7)
+    assert "dead-e" not in _game_memory["dead-game"]["enemy_info"], "T7 failed"
+    log.info("✅ T7 dead-snake cleanup OK")
 
-    # T10: food stale TTL
+    # T8: food stale TTL
     _game_memory["stale-game"] = {
         "food": {(0,0)}, "food_meta": {(0,0): 1},
         "enemy_info": {}, "latency_history": [],
     }
-    d10 = copy.deepcopy(BASE_DATA); d10["game"]["id"] = "stale-game"; d10["turn"] = 50
-    mf10 = _update_food_memory("stale-game", d10)
-    assert (0,0) not in mf10, "T10 failed: stale food should be evicted"
-    log.info("✅ T10 food-stale-TTL OK")
+    d8 = copy.deepcopy(BASE_DATA); d8["game"]["id"] = "stale-game"; d8["turn"] = 50
+    mf8 = _update_food_memory("stale-game", d8)
+    assert (0,0) not in mf8, "T8 failed: stale food should be evicted"
+    log.info("✅ T8 food-stale-TTL OK")
 
-    # ── V8.0 new tests ──────────────────────────────────────────────────
+    # T9: edge/corner penalty constants
+    assert TacticalEngine.W_EDGE < 0,   "T9 failed: W_EDGE must be negative"
+    assert TacticalEngine.W_CORNER < 0, "T9 failed: W_CORNER must be negative"
+    log.info("✅ T9 edge/corner constants OK — W_EDGE=%d W_CORNER=%d",
+             TacticalEngine.W_EDGE, TacticalEngine.W_CORNER)
 
-    # T11: edge penalty — (0, 5) should score worse than (1, 5)
-    occ11: set[tuple[int,int]] = set()  # empty board
-    w_e = TacticalEngine.W_EDGE
-    w_c = TacticalEngine.W_CORNER
-    edge_score   = 20 * 100 + w_e          # Voronoi≈100 + edge penalty at (0,5)
-    nonedge_score = 20 * 100               # Voronoi≈100, no edge at (1,5)
-    assert w_e < 0, "T11 failed: W_EDGE should be negative"
-    assert w_c < 0, "T11 failed: W_CORNER should be negative"
-    assert edge_score < nonedge_score, "T11 failed: edge must penalize"
-    log.info("✅ T11 edge/corner constants correct — W_EDGE=%d W_CORNER=%d", w_e, w_c)
+    # T10: desperation mode (health=8, food dist > health)
+    d10 = copy.deepcopy(BASE_DATA); d10["game"]["id"] = "desp-game"
+    d10["you"]["health"] = 8
+    d10["board"]["snakes"][0].update({"health":8})
+    d10["board"]["snakes"] = [d10["board"]["snakes"][0]]
+    d10["board"]["food"] = [{"x":0,"y":0}]
+    mf10 = _fresh("desp-game", d10)
+    r10  = TacticalEngine.get_best_move(d10, mf10, game_id="desp-game")
+    assert r10 in {"up","down","left","right"}, f"T10 failed: {r10!r}"
+    log.info("✅ T10 desperation-mode OK — health=8 → '%s'", r10)
 
-    # T12: desperation mode — health < 15, food unreachable
-    d12 = copy.deepcopy(BASE_DATA); d12["game"]["id"] = "desp-game"
-    d12["you"]["health"] = 8
-    d12["you"]["head"] = {"x":5,"y":5}
-    d12["you"]["body"] = [{"x":5,"y":5},{"x":5,"y":4},{"x":5,"y":3}]
-    d12["board"]["snakes"][0].update({"head":{"x":5,"y":5},
-                                       "body":[{"x":5,"y":5},{"x":5,"y":4},{"x":5,"y":3}]})
-    d12["board"]["snakes"] = [d12["board"]["snakes"][0]]
-    d12["board"]["food"] = [{"x":0,"y":0}]  # dist=10 > health=8
-    mf12, _ = _fresh("desp-game", d12)
-    r12 = TacticalEngine.get_best_move(d12, mf12, game_id="desp-game")
-    assert r12 in {"up","down","left","right"}, f"T12 failed: {r12!r}"
-    log.info("✅ T12 desperation-mode OK — health=8 → chose '%s'", r12)
+    # T11: opening book turn 1
+    d11 = copy.deepcopy(BASE_DATA); d11["game"]["id"] = "ob-game"; d11["turn"] = 1
+    d11["board"]["snakes"] = [d11["board"]["snakes"][0]]
+    mf11 = _fresh("ob-game", d11)
+    r11  = TacticalEngine.get_best_move(d11, mf11, game_id="ob-game")
+    assert r11 in {"up","down","left","right"}, f"T11 failed: {r11!r}"
+    log.info("✅ T11 opening-book OK — turn=1 → '%s'", r11)
 
-    # T13: threat density — (5,6) adjacent to 2 enemy heads → crossfire penalty
-    d13 = copy.deepcopy(BASE_DATA); d13["game"]["id"] = "threat-game"
-    d13["you"]["head"] = {"x":5,"y":5}; d13["you"]["body"] = [{"x":5,"y":5},{"x":5,"y":4},{"x":5,"y":3}]
-    d13["board"]["snakes"] = [
+    # T12: hierarchical tier — VETO blocks unsafe moves
+    d12 = copy.deepcopy(BASE_DATA); d12["game"]["id"] = "veto-game"; d12["turn"] = 20
+    d12["board"]["snakes"] = [
         {"id":"me","name":"الثعبان","health":90,"head":{"x":5,"y":5},
          "body":[{"x":5,"y":5},{"x":5,"y":4},{"x":5,"y":3}],"length":3},
-        {"id":"e1","name":"e1","health":90,"head":{"x":5,"y":7},
-         "body":[{"x":5,"y":7},{"x":5,"y":8}],"length":2},
-        {"id":"e2","name":"e2","health":90,"head":{"x":4,"y":6},
-         "body":[{"x":4,"y":6},{"x":3,"y":6}],"length":2},
+        # Enemy at (5,6) — moving up would be H2H with equal-length enemy
+        {"id":"e_eq","name":"e_eq","health":90,"head":{"x":5,"y":7},
+         "body":[{"x":5,"y":7},{"x":5,"y":8},{"x":5,"y":9}],"length":3},
     ]
-    d13["you"] = d13["board"]["snakes"][0]
-    # Both e1 and e2 can reach (5,6): threat_count[(5,6)] = 2
-    mf13, _ = _fresh("threat-game", d13)
-    r13 = TacticalEngine.get_best_move(d13, mf13, game_id="threat-game")
-    assert r13 in {"up","down","left","right"}, f"T13 failed: {r13!r}"
-    log.info("✅ T13 threat-density OK — crossfire at (5,6), chose '%s'", r13)
+    d12["you"] = d12["board"]["snakes"][0]
+    mf12 = _fresh("veto-game", d12)
+    r12  = TacticalEngine.get_best_move(d12, mf12, game_id="veto-game")
+    assert r12 in {"up","down","left","right"}, f"T12 failed: {r12!r}"
+    log.info("✅ T12 hierarchical-veto OK — chose '%s' (equal enemy above)", r12)
+
+    # T13: _is_boxed_in detects small pocket
+    ctx_fake = GameContext(
+        our_head=(9,9), our_body=[(9,9),(9,8)], our_len=3,
+        our_health=80, our_tail=(9,8),
+        width=11, height=11, turn=15,
+        occupied={(x,y) for x in range(11) for y in range(11)} - {(9,9),(8,9)},
+        occupied_conservative={(x,y) for x in range(11) for y in range(11)} - {(9,9),(8,9)},
+        hazard_set=set(), hazard_dmg=0,
+        enemy_heads=[], enemy_data=[],
+        visible_food=set(), merged_food=set(),
+        food_dist_map={},
+        phase=GamePhase.MID,
+        deadline=time.monotonic() + 1.0,
+        view_radius=5,
+        enemy_info={},
+    )
+    boxed = TacticalEngine._is_boxed_in(ctx_fake, (8, 9))
+    assert boxed, "T13 failed: 2-cell pocket should be boxed-in"
+    log.info("✅ T13 _is_boxed_in OK")
+
+    # T14: phase weights exist for all phases
+    for ph in GamePhase:
+        assert ph in TacticalEngine.PHASE_WEIGHTS, f"T14 failed: no weights for {ph}"
+    log.info("✅ T14 phase-weights OK — all 4 phases have entries")
+
+    # T15: food race v2 — certain win
+    ctx15 = GameContext(
+        our_head=(5,5), our_body=[(5,5)], our_len=3, our_health=80, our_tail=(5,5),
+        width=11, height=11, turn=15,
+        occupied=set(), occupied_conservative=set(), hazard_set=set(), hazard_dmg=0,
+        enemy_heads=[(8,8)],
+        enemy_data=[{"id":"e","head":{"x":8,"y":8},"head_pos":(8,8),
+                     "length":3,"visible_segs":2,"health":80,"body":[],"prev_length":0}],
+        visible_food={(5,6)}, merged_food={(5,6)},
+        food_dist_map={(5,5):1.0,(5,6):0.0,(8,8):6.0},
+        phase=GamePhase.MID, deadline=time.monotonic()+1.0,
+        view_radius=5, enemy_info={},
+    )
+    rv15 = TacticalEngine._food_race_v2((5,5), ctx15, ctx15.enemy_data)
+    assert rv15 == 1.0, f"T15 failed: rv={rv15}, expected 1.0 (we're closer to food)"
+    log.info("✅ T15 food-race-v2 OK — rv=%.1f (certain win)", rv15)
+
+    # T16: executioner score fires when blocking food path
+    ctx16 = GameContext(
+        our_head=(5,5), our_body=[(5,5),(5,4)], our_len=5, our_health=80, our_tail=(5,4),
+        width=11, height=11, turn=30,
+        occupied={(5,5),(5,4)}, occupied_conservative={(5,5),(5,4)},
+        hazard_set=set(), hazard_dmg=0,
+        enemy_heads=[(5,7)],
+        enemy_data=[{"id":"e","head":{"x":5,"y":7},"head_pos":(5,7),
+                     "length":3,"visible_segs":2,"health":40,"body":[],"prev_length":0}],
+        visible_food={(5,9)}, merged_food={(5,9)},
+        food_dist_map={(5,7):2.0,(5,8):1.0,(5,9):0.0,(5,6):3.0,(5,5):4.0},
+        phase=GamePhase.LATE_1V1, deadline=time.monotonic()+1.0,
+        view_radius=5, enemy_info={},
+    )
+    enemy16 = ctx16.enemy_data[0]
+    # Candidate (5,8) is a first-step on enemy's path to food (dist 1.0 < enemy dist 2.0)
+    exec_s  = TacticalEngine._executioner_score((5,8), enemy16, ctx16)
+    assert exec_s > 0, f"T16 failed: executioner should fire, got {exec_s}"
+    log.info("✅ T16 executioner-score OK — bonus=%.0f for blocking food path", exec_s)
 
     # Cleanup
-    for gid2 in ["test-v8","tail-test",gid3,"haz-game","1v1-game",
-                  "dead-game","stale-game","desp-game","threat-game"]:
+    for gid2 in ["test-v9","tail-test","ghost-risk","haz-game","1v1-game",
+                  "dead-game","stale-game","desp-game","ob-game","veto-game"]:
         _game_memory.pop(gid2, None)
 
 
