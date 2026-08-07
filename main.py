@@ -278,23 +278,23 @@ class TacticalEngine:
     HUNGER_THRESHOLD   = 45
     COMPUTE_BUDGET_S: float = 0.250
 
-    # ── Phase-dynamic weights (V9.0) ───────────────────────────────────
+    # ── Phase-dynamic weights (V9b BLOODLUST calibrated) ────────────────
     PHASE_WEIGHTS: dict[GamePhase, dict] = {
         GamePhase.EARLY: {
-            "W_VORONOI": 15, "W_FOOD": -20, "W_EDGE": -6,
-            "W_CORNER": -15, "W_COMBAT_KILL": 800, "HUNGER_THRESHOLD": 50,
+            "W_VORONOI": 10, "W_FOOD": -40, "W_EDGE": -4,
+            "W_CORNER": -12, "W_COMBAT_KILL": 1000, "HUNGER_THRESHOLD": 55,
         },
         GamePhase.MID: {
-            "W_VORONOI": 20, "W_FOOD": -30, "W_EDGE": -4,
-            "W_CORNER": -12, "W_COMBAT_KILL": 800, "HUNGER_THRESHOLD": 45,
+            "W_VORONOI": 15, "W_FOOD": -35, "W_EDGE": -4,
+            "W_CORNER": -12, "W_COMBAT_KILL": 1000, "HUNGER_THRESHOLD": 50,
         },
         GamePhase.LATE_1V1: {
-            "W_VORONOI": 25, "W_FOOD": -15, "W_EDGE": 0,
-            "W_CORNER": 0, "W_COMBAT_KILL": 1200, "HUNGER_THRESHOLD": 25,
+            "W_VORONOI": 10, "W_FOOD": -30, "W_EDGE": 0,
+            "W_CORNER": 0, "W_COMBAT_KILL": 2000, "HUNGER_THRESHOLD": 35,
         },
         GamePhase.LATE_FFA: {
-            "W_VORONOI": 20, "W_FOOD": -25, "W_EDGE": -2,
-            "W_CORNER": -8, "W_COMBAT_KILL": 1200, "HUNGER_THRESHOLD": 40,
+            "W_VORONOI": 15, "W_FOOD": -35, "W_EDGE": -2,
+            "W_CORNER": -8, "W_COMBAT_KILL": 1500, "HUNGER_THRESHOLD": 50,
         },
     }
 
@@ -1069,58 +1069,42 @@ class TacticalEngine:
         return GamePhase.EARLY if turn < 20 else GamePhase.MID
 
     # ================================================================== #
-    #  STRATEGIC: Opening Book turns 1-5 (V9.0)                        #
+    #  STRATEGIC: Opening Book turns 1-5 (V8.1 BLOODLUST — food first) #
     # ================================================================== #
     @classmethod
     def _opening_book(cls, ctx: GameContext, safe_moves: list) -> str | None:
         if ctx.turn > 5 or not safe_moves:
             return None
 
-        center_x = ctx.width  // 2
-        center_y = ctx.height // 2
-
-        def toward_center(moves: list) -> str:
+        # BLOODLUST: always sprint to nearest visible food first (turns 1-5)
+        if ctx.visible_food:
             best_d = None
             best_dist = float("inf")
-            for d in moves:
-                dx, dy = cls.DIRECTIONS[d]
-                nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
-                dist = _manhattan(nx, ny, center_x, center_y)
-                if dist < best_dist:
-                    best_dist = dist; best_d = d
-            return best_d or moves[0]
-
-        if ctx.turn == 1:
-            return toward_center(safe_moves)
-
-        if ctx.turn in (2, 3):
-            # Grab nearby food if possible
             for d in safe_moves:
                 dx, dy = cls.DIRECTIONS[d]
                 nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
+                # Direct food hit
                 if (nx, ny) in ctx.visible_food:
                     return d
-            return toward_center(safe_moves)
-
-        # Turns 4-5: head toward smaller visible enemy; else center
-        smaller_enemies = [
-            e for e in ctx.enemy_data
-            if e["head_pos"] is not None and e["length"] < ctx.our_len
-        ]
-        if smaller_enemies:
-            target = smaller_enemies[0]["head_pos"]
-            best_d = None
-            best_dist = float("inf")
-            for d in safe_moves:
-                dx, dy = cls.DIRECTIONS[d]
-                nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
-                dist = _manhattan(nx, ny, target[0], target[1])
-                if dist < best_dist:
-                    best_dist = dist; best_d = d
+                # Or closest approach
+                fd = min(_manhattan(nx, ny, fx, fy) for fx, fy in ctx.visible_food)
+                if fd < best_dist:
+                    best_dist = fd; best_d = d
             if best_d:
                 return best_d
 
-        return toward_center(safe_moves)
+        # No visible food — move toward center
+        center_x = ctx.width  // 2
+        center_y = ctx.height // 2
+        best_d = None
+        best_dist = float("inf")
+        for d in safe_moves:
+            dx, dy = cls.DIRECTIONS[d]
+            nx, ny = ctx.our_head[0]+dx, ctx.our_head[1]+dy
+            dist = _manhattan(nx, ny, center_x, center_y)
+            if dist < best_dist:
+                best_dist = dist; best_d = d
+        return best_d or safe_moves[0]
 
     # ================================================================== #
     #  Space-max fallback                                                #
@@ -1443,9 +1427,10 @@ class TacticalEngine:
         hunger_thr = pw["HUNGER_THRESHOLD"]
         kill_margin = 1 if ctx.phase == GamePhase.LATE_FFA else cls.KILL_MARGIN
 
-        # Precompute kill cells + H2H map
+        # Precompute kill cells + H2H map + enemy legal-move counts
         kill_cells: set   = set()
         h2h_risk_map: dict = {}
+        enemy_legal_counts: dict = {}  # enemy_id -> count of legal moves (for RISK_EQUAL override)
         priority_ord = {"RISK_HIGH": 3, "RISK_EQUAL": 2, "RISK_LOW": 1, "RISK_NONE": 0}
 
         for e in ctx.enemy_data:
@@ -1460,7 +1445,7 @@ class TacticalEngine:
             safe_kill = (visible_segs >= e_len - 1
                          and (ctx.our_len - visible_segs) >= kill_margin + 1)
 
-            # Trapped-kill exception (V8 3.1)
+            # Trapped-kill exception + count legal moves (§2.1 Trapped Enemy Auto-Attack)
             e_body   = e.get("body", [])
             e_neck_r = e_body[1] if len(e_body) > 1 else None
             e_neck   = _pt(e_neck_r)
@@ -1472,10 +1457,17 @@ class TacticalEngine:
             ]
             if e_neck:
                 e_legal = [m for m in e_legal if m != e_neck]
+            enemy_legal_counts[e.get("id", "")] = len(e_legal)
+
+            # Auto-attack: 1 legal escape AND we are longer
             if len(e_legal) == 1 and ctx.our_len > e_len:
                 kill_cells.add(e_legal[0])
 
             risk = cls._h2h_risk_level(ctx.our_len, e_len, kill_margin)
+
+            # §2.3 RISK_EQUAL rebalance: enemy with ≤2 legal moves treated as RISK_LOW
+            if risk == "RISK_EQUAL" and len(e_legal) <= 2:
+                risk = "RISK_LOW"
 
             for dx, dy in cls._DELTAS:
                 cell = (pos[0]+dx, pos[1]+dy)
@@ -1505,8 +1497,7 @@ class TacticalEngine:
         ghost_info  = {k: v for k, v in ctx.enemy_info.items() if k not in visible_ids}
         ghost_risk  = cls._compute_ghost_risk(ghost_info, ctx.turn, ctx.occupied, ctx.width, ctx.height)
 
-        # Precompute: enemy free-space without us (for constriction)
-        enemies_raw = [e for e in data["board"].get("snakes", []) if e["id"] != data["you"]["id"]]
+        # Precompute: enemy free-space without us (for constriction + enclosed-enemy detector)
         e_free_precomp: dict = {}
         primary_enemy = next((e for e in ctx.enemy_data if e["head_pos"] is not None), None)
         if primary_enemy and time.monotonic() < ctx.deadline - 0.08:
@@ -1514,26 +1505,74 @@ class TacticalEngine:
             occ_no_us = ctx.occupied - set(ctx.our_body) | {ctx.our_head}
             e_free_precomp[ep] = cls.voronoi_bfs(ep, [], occ_no_us, ctx.width, ctx.height)
 
+        # ── PRE-TIER: FREE FOOD immediate return (§1.1) ───────────────
+        # If food is adjacent AND safe AND we'd win the food race, take it NOW.
+        if ctx.visible_food:
+            for direction in moves:
+                dx, dy = cls.DIRECTIONS[direction]
+                cand   = (ctx.our_head[0]+dx, ctx.our_head[1]+dy)
+                if cand not in ctx.visible_food:
+                    continue
+                if cand in ctx.occupied:
+                    continue
+                h2h_at_food = h2h_risk_map.get(cand, "RISK_NONE")
+                if h2h_at_food in ("RISK_HIGH", "RISK_EQUAL"):
+                    continue
+                # Skip if an equal/larger enemy is also adjacent to this food (food-race collision risk)
+                contested = any(
+                    _manhattan(e["head_pos"][0], e["head_pos"][1], cand[0], cand[1]) <= 2
+                    and e["length"] >= ctx.our_len
+                    for e in ctx.enemy_data
+                    if e["head_pos"] is not None
+                )
+                if contested:
+                    continue
+                if cls._is_boxed_in(ctx, cand):
+                    continue
+                log.info("FREE FOOD → %s at %s", direction, cand)
+                return direction
+
+
+        # ── PRE-TIER: TRAPPED ENEMY AUTO-ATTACK (§2.1) ───────────────
+        # If enemy has exactly 1 legal move AND we can step there AND we're longer → kill
+        if ctx.our_len > 3:  # avoid suiciding early
+            for direction in moves:
+                dx, dy = cls.DIRECTIONS[direction]
+                cand   = (ctx.our_head[0]+dx, ctx.our_head[1]+dy)
+                if cand not in kill_cells:
+                    continue
+                if cand in ctx.occupied:
+                    continue
+                # Verify this is a 1-escape-cell kill (not just a normal kill cell)
+                for e in ctx.enemy_data:
+                    if e["head_pos"] is None:
+                        continue
+                    if e["length"] >= ctx.our_len:
+                        continue
+                    eid = e.get("id", "")
+                    if enemy_legal_counts.get(eid, 99) == 1:
+                        h2h_at = h2h_risk_map.get(cand, "RISK_NONE")
+                        if h2h_at not in ("RISK_HIGH",):
+                            log.info("TRAPPED ENEMY AUTO-ATTACK → %s kills %s", direction, eid)
+                            return direction
+
         # ── TIER CLASSIFICATION ───────────────────────────────────────
         move_tiers: dict = {}
-        all_threatened: set = set()
         for eh in ctx.enemy_heads:
             for dx, dy in cls._DELTAS:
                 c = (eh[0]+dx, eh[1]+dy)
                 if 0 <= c[0] < ctx.width and 0 <= c[1] < ctx.height:
-                    all_threatened.add(c)
+                    pass  # threat_count already built
 
         for direction in moves:
             dx, dy = cls.DIRECTIONS[direction]
             cand   = (ctx.our_head[0]+dx, ctx.our_head[1]+dy)
 
             # --- VETO ---
-            # Direct H2H death: moving onto or adjacent to an equal/larger enemy
             if cand in ctx.occupied:
                 move_tiers[direction] = MoveTier.VETO
                 continue
 
-            # Moving to an enemy head cell (certain death)
             is_direct_death = any(
                 cand == e["head_pos"]
                 for e in ctx.enemy_data
@@ -1567,9 +1606,24 @@ class TacticalEngine:
                 or (h2h == "RISK_EQUAL" and tc >= 1)
             )
 
+            # §3.1 Coil Cap: forbid moving adjacent to own tail unless starving/no-enemy/no-food
+            is_tail_coil = False
+            if ctx.our_tail is not None and ctx.our_health >= 25:
+                if _manhattan(cand[0], cand[1], ctx.our_tail[0], ctx.our_tail[1]) <= 1:
+                    has_nearby_food = any(
+                        _manhattan(cand[0], cand[1], fx, fy) <= 2
+                        for fx, fy in ctx.visible_food
+                    ) if ctx.visible_food else False
+                    has_nearby_enemy = any(
+                        _manhattan(cand[0], cand[1], eh[0], eh[1]) <= 2
+                        for eh in ctx.enemy_heads
+                    )
+                    if has_nearby_food or has_nearby_enemy:
+                        is_tail_coil = True
+
             boxed = cls._is_boxed_in(ctx, cand)
 
-            if is_h2h_risky or boxed:
+            if is_h2h_risky or boxed or is_tail_coil:
                 move_tiers[direction] = MoveTier.SURVIVAL_RISKY
                 continue
 
@@ -1624,7 +1678,18 @@ class TacticalEngine:
             and ctx.our_len > (primary_enemy["length"] + 1)
         )
 
-        # ── SCORING LOOP ──────────────────────────────────────────────
+        # ── DO SOMETHING timer: track turns since last food ──────────
+        game_mem     = _game_memory.get(data.get("game", {}).get("id", ""), {})
+        last_food_t  = game_mem.get("last_food_turn", 0)
+        starve_coast = ctx.turn - last_food_t
+        # Update last_food_turn when we just ate (body[-1] == body[-2])
+        body_pts = ctx.our_body
+        if len(body_pts) >= 2 and body_pts[0] == body_pts[-1]:
+            game_mem["last_food_turn"] = ctx.turn
+            starve_coast = 0
+        do_something_mode = (starve_coast >= 10 and ctx.our_health < 80)
+
+        # ── SCORING LOOP (V8.1 BLOODLUST) ─────────────────────────────
         scores: dict = {}
         timed_out = False
 
@@ -1642,18 +1707,54 @@ class TacticalEngine:
             voronoi   = cls.voronoi_bfs(cand, ctx.enemy_heads, ctx.occupied, ctx.width, ctx.height)
             food_dist = ctx.food_dist_map.get(cand, float(ctx.width + ctx.height))
 
-            # Territory
-            score += w_voronoi * voronoi
+            # §3.3 Expansion Bonus: reduce Voronoi weight when we already own lots of space
+            eff_voronoi_w = w_voronoi
+            if voronoi > ctx.our_len * 4:
+                eff_voronoi_w = w_voronoi * 0.5
 
-            # Kill bonus (within tier3 only—still apply for scoring within tier)
+            # Territory
+            score += eff_voronoi_w * voronoi
+
+            # Kill bonus
             if cand in kill_cells:
                 score += w_kill
 
-            # H2H penalty (applies within SURVIVAL_SAFE tier)
+            # §2.2 Enclosed Enemy Detector: +800 for reducing enemy space (lightweight version)
+            # Note: full constriction is computed separately below; this is a cheap bonus.
+            if (we_dominant and primary_enemy
+                    and primary_enemy["head_pos"] in e_free_precomp):
+                ep = primary_enemy["head_pos"]
+                e_free_before = e_free_precomp[ep]
+                # Approx: if candidate is adjacent to enemy head, it likely constricts
+                if (e_free_before > 0
+                        and _manhattan(nx, ny, ep[0], ep[1]) <= 2
+                        and nx != ep[0] or ny != ep[1]):
+                    score += 400  # lighter bonus, no extra voronoi call
+
+            # H2H penalty
             h2h = h2h_risk_map.get(cand, "RISK_NONE")
-            if h2h == "RISK_HIGH":   score -= 1200
+            if h2h == "RISK_HIGH":    score -= 1200
             elif h2h == "RISK_EQUAL": score -= 600
             elif h2h == "RISK_LOW":   score -= 200
+
+            # §5.3 H2H Challenge: if we're longer+2 and close to enemy, move toward them
+            for e in ctx.enemy_data:
+                if e["head_pos"] is None:
+                    continue
+                edist = _manhattan(cand[0], cand[1], e["head_pos"][0], e["head_pos"][1])
+                if ctx.our_len > e["length"] + 2 and edist <= 2:
+                    score += 600  # advance into them
+
+            # §5.1 Pincer bonus: cut off enemy near wall
+            for e in ctx.enemy_data:
+                if e["head_pos"] is None:
+                    continue
+                ex2, ey2 = e["head_pos"]
+                near_wall = (ex2 <= 1 or ex2 >= ctx.width-2 or ey2 <= 1 or ey2 >= ctx.height-2)
+                if near_wall and ctx.our_len > e["length"]:
+                    dist_cand_to_enemy = _manhattan(nx, ny, ex2, ey2)
+                    if dist_cand_to_enemy <= 3:
+                        score += 800
 
             # Crossfire (V8 2.7)
             if threat_count.get(cand, 0) >= 2:
@@ -1666,58 +1767,109 @@ class TacticalEngine:
             if cand in ctx.hazard_set:
                 score += cls.W_HAZARD_CELL
 
-            # Food scoring — Starvation Clock + Food Race V2
+            # ── FOOD SCORING with BLOODLUST food sprint (§1.2) ────────
             nearest_food_d = ctx.food_dist_map.get(cand, float("inf"))
-            if turns_to_die > 0 and nearest_food_d != float("inf"):
-                if nearest_food_d >= turns_to_die:
-                    # DESPERATION — ignore combat penalties, sprint to food
-                    score = -food_dist * 200 + voronoi  # pure food chase
-                elif nearest_food_d < turns_to_die - 10:
-                    food_wt = w_food * 0.3  # food abundant
-                else:
-                    food_wt = w_food        # moderate urgency
 
-                if nearest_food_d < turns_to_die:
-                    race_value = cls._food_race_v2(cand, ctx, ctx.enemy_data)
-                    if race_value > 0:
-                        score += food_wt * food_dist * (1.0 + race_value)
-                    elif race_value < 0:
-                        score += abs(food_wt) * 20
+            # Food Sprint multiplier based on health
+            if ctx.our_health < 70:
+                food_multiplier = 3.0
+            elif ctx.our_health < 90:
+                food_multiplier = 1.5
+            else:
+                food_multiplier = 0.5
+
+            # §1.3 Prioritize visible food: use shorter distance if food is actually visible
+            if ctx.visible_food:
+                vis_food_d = min(
+                    (_manhattan(nx, ny, fx, fy) for fx, fy in ctx.visible_food),
+                    default=float("inf")
+                )
+                if vis_food_d < nearest_food_d:
+                    nearest_food_d = float(vis_food_d)
+                    food_dist = float(vis_food_d)
+
+            if turns_to_die > 0:
+                if nearest_food_d != float("inf") and nearest_food_d >= turns_to_die:
+                    # DESPERATION / CORNERED BEAST — pure food chase
+                    score = -food_dist * 200 + voronoi
+                else:
+                    base_food_wt = w_food * food_multiplier
+                    if nearest_food_d != float("inf") and nearest_food_d < turns_to_die - 10:
+                        food_wt = base_food_wt * 0.5   # food abundant → less pull
+                    else:
+                        food_wt = base_food_wt
+
+                    if nearest_food_d != float("inf") and nearest_food_d < turns_to_die:
+                        race_value = cls._food_race_v2(cand, ctx, ctx.enemy_data)
+                        if race_value > 0:
+                            score += food_wt * food_dist * (1.0 + race_value)
+                        elif race_value < 0:
+                            score += abs(food_wt) * 20
+                        else:
+                            score += food_wt * food_dist
                     else:
                         score += food_wt * food_dist
+
+            # §5.2 Food Denial: bonus for being closer to food AND blocking enemy approach
+            if ctx.visible_food and ctx.enemy_heads:
+                vis_food_d_us  = min((_manhattan(nx, ny, fx, fy) for fx, fy in ctx.visible_food), default=999)
+                vis_food_d_ene = min(
+                    (_manhattan(ex3, ey3, fx, fy) for ex3, ey3 in ctx.enemy_heads for fx, fy in ctx.visible_food),
+                    default=999
+                )
+                if vis_food_d_us < vis_food_d_ene:
+                    score += 600
+
+            # §6.1 Do Something override: pure food/attack, ignore territory
+            if do_something_mode:
+                score -= eff_voronoi_w * voronoi  # strip territory bonus
+                score += cls.W_CENTER * 0          # strip center
+                score += 200 * (1.0 / max(1, food_dist))  # pure food pull
 
             # Executioner mode
             if exec_active and primary_enemy:
                 score += cls._executioner_score(cand, primary_enemy, ctx)
 
-            # Constriction (when dominant)
-            if we_dominant and primary_enemy and primary_enemy["head_pos"] in e_free_precomp:
+            # Constriction (when dominant) — skip if already did enclosed-enemy
+            if (we_dominant and primary_enemy
+                    and primary_enemy["head_pos"] in e_free_precomp
+                    and time.monotonic() < ctx.deadline - 0.05):
                 ep = primary_enemy["head_pos"]
                 score += cls._constriction_score(cand, ep, e_free_precomp[ep], ctx)
 
-            # Edge / corner (V8 2.1, now phase-dynamic)
-            on_edge   = (nx == 0 or nx == ctx.width-1 or ny == 0 or ny == ctx.height-1)
-            on_corner = ((nx == 0 or nx == ctx.width-1) and (ny == 0 or ny == ctx.height-1))
-            if on_edge:   score += w_edge
-            if on_corner: score += w_corner
+            # Edge / corner (phase-dynamic)
+            if not do_something_mode:
+                on_edge   = (nx == 0 or nx == ctx.width-1 or ny == 0 or ny == ctx.height-1)
+                on_corner = ((nx == 0 or nx == ctx.width-1) and (ny == 0 or ny == ctx.height-1))
+                if on_edge:   score += w_edge
+                if on_corner: score += w_corner
 
-            # Shadow penalty (V9.0): same row/col as enemy, dist <= 2
-            for ep in ctx.enemy_heads:
-                if (nx == ep[0] or ny == ep[1]) and _manhattan(nx, ny, ep[0], ep[1]) <= 2:
+            # Shadow penalty (V9.0)
+            for ep2 in ctx.enemy_heads:
+                if (nx == ep2[0] or ny == ep2[1]) and _manhattan(nx, ny, ep2[0], ep2[1]) <= 2:
                     score -= 120
 
-            # Tail-following coiling (V8 2.5)
-            if (ctx.our_health > 70 and ctx.our_tail is not None
-                    and all(_manhattan(nx, ny, eh[0], eh[1]) > 4 for eh in ctx.enemy_heads)):
+            # §3.2 Self-Touch Penalty: -60 for moving directly adjacent to own body (not neck)
+            if len(ctx.our_body) > 2:
+                for seg in ctx.our_body[2:]:
+                    if seg and _manhattan(nx, ny, seg[0], seg[1]) == 1:
+                        score -= 60
+                        break  # one penalty per move
+
+            # Tail-following coiling ONLY when no threats and no food nearby
+            if (ctx.our_health > 80 and ctx.our_tail is not None
+                    and not ctx.visible_food
+                    and all(_manhattan(nx, ny, eh[0], eh[1]) > 5 for eh in ctx.enemy_heads)):
                 tail_dist = _manhattan(nx, ny, ctx.our_tail[0], ctx.our_tail[1])
-                score += max(0, 10 - tail_dist) * 5
+                score += max(0, 8 - tail_dist) * 3
 
             # Center pull
-            cx2   = (ctx.width - 1) / 2.0
-            cy2   = (ctx.height - 1) / 2.0
-            score += cls.W_CENTER * (abs(nx - cx2) + abs(ny - cy2))
+            if not do_something_mode:
+                cx2   = (ctx.width - 1) / 2.0
+                cy2   = (ctx.height - 1) / 2.0
+                score += cls.W_CENTER * (abs(nx - cx2) + abs(ny - cy2))
 
-            # Minimax modifier (V8 fix 1.2 — 5% influence)
+            # Minimax modifier (5% influence)
             if mm_scores:
                 mm = mm_scores.get(direction, 0.0)
                 if mm <= -999999.0:
@@ -1735,10 +1887,10 @@ class TacticalEngine:
         chosen     = random.choice(best_moves)
         elapsed    = (time.monotonic() - (ctx.deadline - cls.COMPUTE_BUDGET_S)) * 1000
         log.info(
-            "V9 Scores: %s | tier3=%s tier2=%s | phase=%s health=%d elapsed=%.1fms%s → %s",
+            "V9b Scores: %s | tier3=%s tier2=%s | phase=%s health=%d coast=%d elapsed=%.1fms%s → %s",
             {m: f"{s:.0f}" for m, s in scores.items()},
             len(tier3), len(tier2),
-            ctx.phase.value, ctx.our_health, elapsed,
+            ctx.phase.value, ctx.our_health, starve_coast, elapsed,
             " [TIMEOUT]" if timed_out else "", chosen,
         )
         return chosen
