@@ -62,7 +62,7 @@ def mutate(ind: dict, rate: float = 0.35, strength: float = 0.35) -> dict:
             v = out[phase][k]
             factor = 1.0 + random.uniform(-strength, strength)
             v = v * factor + random.gauss(0, 3.0)
-            out[phase][k] = round(max(0.0, v), 2)
+            out[phase][k] = round(max(0.0, min(v, 500.0)), 2)
     return out
 
 
@@ -78,104 +78,32 @@ def crossover(a: dict, b: dict) -> dict:
 # ---------------------------------------------------------------------------
 # In-process game simulation (fast — reuses run_games.py internals directly)
 # ---------------------------------------------------------------------------
-def _new_snakes(n: int, agents: list) -> list:
-    positions = [(1, 1), (9, 9), (1, 9), (9, 1)][:n]
-    return [rg.Snake(id=f"s{i}", name=agents[i].get_name(), body=[p, p, p]) for i, p in enumerate(positions)]
-
-
 def play_game(agents: list, seed: int, max_turns: int = 300) -> tuple[list[bool], list[int | None]]:
     """agents: list of objects with .get_name()/.start()/.move(). Returns
     (win_flags, death_turns) — death_turns[i] is None if agent i survived
     (won or still alive at max_turns)."""
     random.seed(seed)
+    rg.HAZARD_CELLS = []
+    rg.HAZARD_DMG = 0
     game_id = f"tune-{seed}-{random.random()}"
-    snakes = _new_snakes(len(agents), agents)
-    death_turns: list[int | None] = [None] * len(agents)
-    food: list = []
-    occ0 = {s.body[0] for s in snakes}
-    for _ in range(rg.FOOD_MIN):
-        p = rg._random_empty(occ0 | set(food))
-        if p:
-            food.append(p)
-
-    for i, a in enumerate(agents):
-        try:
-            a.start(rg._wrap(rg._mk_state(game_id, 0, snakes, food, i)))
-        except Exception:
-            pass
-
-    turn = 0
-    while True:
-        turn += 1
-        alive = [i for i, s in enumerate(snakes) if s.alive]
-        if len(alive) <= 1 or turn > max_turns:
-            break
-        if len(food) < rg.FOOD_MIN or random.random() < rg.FOOD_SPAWN_PROB:
-            all_occ = {seg for s in snakes if s.alive for seg in s.body} | set(food)
-            p = rg._random_empty(all_occ)
-            if p:
-                food.append(p)
-
-        moves = {}
-        for i in alive:
-            try:
-                mv = agents[i].move(rg._wrap(rg._mk_state(game_id, turn, snakes, food, i)))
-                d = str(mv.move).lower() if hasattr(mv, "move") else str(mv).lower()
-                d = next((k for k in DIRS if k in d), "up")
-            except Exception:
-                d = "up"
-            moves[i] = d
-
-        new_heads = {i: (snakes[i].head[0] + DIRS[moves[i]][0], snakes[i].head[1] + DIRS[moves[i]][1]) for i in alive}
-
-        for i in alive:
-            nx, ny = new_heads[i]
-            if not (0 <= nx < rg.WIDTH and 0 <= ny < rg.HEIGHT):
-                snakes[i].alive = False; death_turns[i] = death_turns[i] or turn
-
-        alive = [i for i, s in enumerate(snakes) if s.alive]
-        body_cells = rg._build_occupied_sim([snakes[i] for i in alive])
-        for i in alive:
-            if new_heads[i] in body_cells:
-                snakes[i].alive = False; death_turns[i] = death_turns[i] or turn
-
-        alive = [i for i, s in enumerate(snakes) if s.alive]
-        head_pos: dict = {}
-        for i in alive:
-            head_pos.setdefault(new_heads[i], []).append(i)
-        for pos, claimants in head_pos.items():
-            if len(claimants) < 2:
-                continue
-            max_len = max(snakes[i].length for i in claimants)
-            for i in claimants:
-                if snakes[i].length < max_len:
-                    snakes[i].alive = False; death_turns[i] = death_turns[i] or turn
-                else:
-                    peers = [j for j in claimants if j != i and snakes[j].length == max_len]
-                    if peers:
-                        snakes[i].alive = False; death_turns[i] = death_turns[i] or turn
-
-        alive = [i for i, s in enumerate(snakes) if s.alive]
-        for i in alive:
-            ate = new_heads[i] in food
-            snakes[i].body.insert(0, new_heads[i])
-            if not ate:
-                snakes[i].body.pop()
-            else:
-                snakes[i].health = rg.START_HEALTH
-                food.remove(new_heads[i])
-
-        hazard_set = set(rg.HAZARD_CELLS)
-        for i in alive:
-            snakes[i].health -= rg.HUNGER_PER_TURN
-            if snakes[i].head in hazard_set:
-                snakes[i].health -= rg.HAZARD_DMG
-            if snakes[i].health <= 0:
-                snakes[i].alive = False; death_turns[i] = death_turns[i] or turn
-
-    alive = [i for i, s in enumerate(snakes) if s.alive]
-    winner = alive[0] if len(alive) == 1 else None
-    return [i == winner for i in range(len(agents))], death_turns
+    
+    result = rg._run_standalone_game(agents, game_id, verbose=False)
+    
+    win_flags = [False] * len(agents)
+    if result["winner"] is not None:
+        win_flags[result["winner"]] = True
+        
+    death_turns = [None] * len(agents)
+    # Map deaths by name (works well for our uniquely named tuned agents)
+    name_to_idx = {a.get_name(): i for i, a in enumerate(agents)}
+    for d_event in result.get("deaths", []):
+        name = d_event["agent"]
+        if name in name_to_idx:
+            idx = name_to_idx[name]
+            if death_turns[idx] is None:
+                death_turns[idx] = d_event["turn"]
+                
+    return win_flags, death_turns
 
 
 class _TunedAgent:
@@ -214,7 +142,10 @@ def eval_vs_baselines(weights: dict, n_games: int, seed_base: int) -> tuple[floa
     wins, early_deaths = 0, 0
     for g in range(n_games):
         seed = seed_base + g
-        opponents = [rg.RandomAgent(), rg.SafeFoodSeekingAgent(), rg.RandomAgent()]
+        if g % 2 == 0:
+            opponents = [rg.RandomAgent(), rg.SafeFoodSeekingAgent(), rg.RandomAgent()]
+        else:
+            opponents = [rg.SafeFoodSeekingAgent(), rg.SafeFoodSeekingAgent(), rg.RandomAgent()]
         agents = [_TunedAgent(weights, "x")] + opponents
         win_flags, death_turns = play_game(agents, seed=seed)
         if win_flags[0]:
@@ -297,6 +228,9 @@ def main(args):
     try:
         while time.monotonic() < deadline:
             gen += 1
+            if best_fitness >= 0:
+                population[0] = copy.deepcopy(best)
+            
             seed_base = random.randint(0, 10**6)
             tasks = [(i, population[i], args.games_per_eval, seed_base) for i in range(len(population))]
             results = pool.map(_worker_eval, tasks)
@@ -320,10 +254,39 @@ def main(args):
 
             gen_best_idx = max(range(len(population)), key=lambda i: fitness[i])
             if fitness[gen_best_idx] > best_fitness:
-                best_fitness = fitness[gen_best_idx]
-                best = population[gen_best_idx]
-                save_checkpoint(population, gen, best, best_fitness)
-                print(f"gen {gen}: NEW BEST fitness={best_fitness:.3f} (baseline_wr={baseline_wr[gen_best_idx]:.2f})")
+                candidate = population[gen_best_idx]
+                
+                # Held-out validation
+                val_wr, val_edr = eval_vs_baselines(candidate, args.games_per_eval, seed_base + 900000)
+                val_fitness = val_wr - 2.0 * val_edr
+                
+                if val_fitness > best_fitness:
+                    import subprocess
+                    import shutil
+                    temp_path = BEST_PATH + ".temp"
+                    with open(temp_path, "w") as f:
+                        json.dump(candidate, f, indent=2)
+                    
+                    if os.path.exists(BEST_PATH):
+                        shutil.copy(BEST_PATH, BEST_PATH + ".bak")
+                        
+                    shutil.copy(temp_path, BEST_PATH)
+                    rc = subprocess.call([sys.executable, "-m", "pytest", "test_seed8_regression.py", "-v"])
+                    
+                    if rc == 0:
+                        best_fitness = fitness[gen_best_idx]
+                        best = candidate
+                        save_checkpoint(population, gen, best, best_fitness)
+                        print(f"gen {gen}: NEW BEST fitness={best_fitness:.3f} (val_fitness={val_fitness:.3f})")
+                    else:
+                        print(f"gen {gen}: REJECTED by regression gate")
+                        if os.path.exists(BEST_PATH + ".bak"):
+                            shutil.copy(BEST_PATH + ".bak", BEST_PATH)
+                        # Reset fitness so it doesn't try again right away
+                        fitness[gen_best_idx] = -999.0
+                else:
+                    print(f"gen {gen}: REJECTED by validation (val_fitness={val_fitness:.3f} <= best={best_fitness:.3f})")
+                    fitness[gen_best_idx] = -999.0
             else:
                 print(f"gen {gen}: best_this_gen={fitness[gen_best_idx]:.3f} (all-time={best_fitness:.3f})")
 

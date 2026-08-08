@@ -42,21 +42,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-parser = argparse.ArgumentParser(description="Local Battlesnake Blackout batch test")
-parser.add_argument("--games",        type=int,   default=20,   help="Number of games to run")
-parser.add_argument("--no-hisss",     action="store_true",      help="Force standalone simulator")
-parser.add_argument("--verbose",      action="store_true",      help="Print every turn")
-parser.add_argument("--seed",         type=int,   default=None, help="RNG seed for reproducibility")
-parser.add_argument("--hazards",      action="store_true",      help="Enable left-edge hazard strip")
-parser.add_argument("--hazard-dmg",   type=int,   default=14,   help="Hazard damage per turn (default 14)")
-parser.add_argument("--latency-warn", type=int,   default=250,  help="Warn if move > Nms (default 250)")
-args = parser.parse_args()
+# CLI will be parsed in main()
+args = None
 
-if args.seed is not None:
-    random.seed(args.seed)
+# Default globals
+USE_HISSS = False
+HAZARD_CELLS: list[tuple[int, int]] = []
+HAZARD_DMG = 0
 
 # ---------------------------------------------------------------------------
 # Import our agent + latency collector
@@ -64,19 +56,7 @@ if args.seed is not None:
 import agent_adapter
 from agent_adapter import ThuebanAgent, move_latency_ms
 
-# ---------------------------------------------------------------------------
-# Try to import hisss; fall back to standalone simulator
-# ---------------------------------------------------------------------------
-USE_HISSS = False
-if not args.no_hisss:
-    try:
-        import hisss
-        USE_HISSS = True
-        print("[runner] hisss found — using C++ simulator")
-    except ImportError:
-        print("[runner] hisss not found — using standalone Python simulator")
-else:
-    print("[runner] --no-hisss set — using standalone Python simulator")
+# (hisss import happens in setup())
 
 # ---------------------------------------------------------------------------
 # Simulator constants
@@ -89,11 +69,7 @@ FOOD_SPAWN_PROB = 0.15
 HUNGER_PER_TURN = 1
 START_HEALTH    = 100
 
-# Hazard strip: left column (x == 0) when --hazards is set
-HAZARD_CELLS: list[tuple[int, int]] = (
-    [(0, y) for y in range(HEIGHT)] if args.hazards else []
-)
-HAZARD_DMG = args.hazard_dmg if args.hazards else 0
+# Hazard strip populated by setup() if requested
 
 
 def _mk_ruleset() -> dict:
@@ -281,7 +257,7 @@ def _run_standalone_game(
 
     DIRS = {"up": (0,1), "down": (0,-1), "left": (-1,0), "right": (1,0)}
 
-    deaths: dict[int, int] = {}
+    deaths: list[dict] = []
     hazard_deaths = 0
     hazard_dmg_total = 0
     turn = 0
@@ -329,7 +305,7 @@ def _run_standalone_game(
             nx, ny = new_heads[i]
             if not (0 <= nx < WIDTH and 0 <= ny < HEIGHT):
                 snakes[i].alive = False
-                deaths[i] = turn
+                deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "out-of-bounds", "length": snakes[i].length})
                 if verbose:
                     print(f"    [{snakes[i].name}] died turn {turn}: out-of-bounds")
 
@@ -341,7 +317,7 @@ def _run_standalone_game(
         for i in alive:
             if new_heads[i] in body_cells:
                 snakes[i].alive = False
-                deaths[i] = turn
+                deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "body-collision", "length": snakes[i].length})
                 if verbose:
                     print(f"    [{snakes[i].name}] died turn {turn}: body collision")
 
@@ -358,14 +334,20 @@ def _run_standalone_game(
             for i in claimants:
                 if snakes[i].length < max_len:
                     snakes[i].alive = False
-                    deaths[i] = turn
+                    deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "h2h-shorter", "length": snakes[i].length})
                     if verbose:
                         print(f"    [{snakes[i].name}] died turn {turn}: h2h (shorter)")
                 else:
                     peers = [j for j in claimants if j != i and snakes[j].length == max_len]
                     if peers:
                         snakes[i].alive = False
-                        deaths[i] = turn
+                        deaths.append({
+                            "game_id": game_id,
+                            "turn": turn,
+                            "agent": snakes[i].name,
+                            "cause": "h2h-equal",
+                            "length": snakes[i].length
+                        })
                         if verbose:
                             print(f"    [{snakes[i].name}] died turn {turn}: h2h (equal)")
 
@@ -390,7 +372,8 @@ def _run_standalone_game(
                 hazard_dmg_total += HAZARD_DMG
             if snakes[i].health <= 0:
                 snakes[i].alive = False
-                deaths[i] = turn
+                reason = "hazard+starved" if snakes[i].head in hazard_set else "starved"
+                deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": reason, "length": snakes[i].length})
                 on_hazard = snakes[i].head in hazard_set
                 if on_hazard:
                     hazard_deaths += 1
@@ -651,7 +634,41 @@ class SafeFoodSeekingAgent:
 # ===========================================================================
 # Main loop
 # ===========================================================================
+def setup():
+    global args, USE_HISSS, HAZARD_CELLS, HAZARD_DMG
+    parser = argparse.ArgumentParser(description="Local Battlesnake Blackout batch test")
+    parser.add_argument("--games",        type=int,   default=20,   help="Number of games to run")
+    parser.add_argument("--no-hisss",     action="store_true",      help="Force standalone simulator")
+    parser.add_argument("--verbose",      action="store_true",      help="Print every turn")
+    parser.add_argument("--seed",         type=int,   default=None, help="RNG seed for reproducibility")
+    parser.add_argument("--hazards",      action="store_true",      help="Enable left-edge hazard strip")
+    parser.add_argument("--hazard-dmg",   type=int,   default=14,   help="Hazard damage per turn (default 14)")
+    parser.add_argument("--latency-warn", type=int,   default=250,  help="Warn if move > Nms (default 250)")
+    args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+
+    if args.hazards:
+        HAZARD_CELLS = [(0, y) for y in range(HEIGHT)]
+        HAZARD_DMG = args.hazard_dmg
+    else:
+        HAZARD_CELLS = []
+        HAZARD_DMG = 0
+
+    USE_HISSS = False
+    if not args.no_hisss:
+        try:
+            import hisss
+            USE_HISSS = True
+            print("[runner] hisss found — using C++ simulator")
+        except ImportError:
+            print("[runner] hisss not found — using standalone Python simulator")
+    else:
+        print("[runner] --no-hisss set — using standalone Python simulator")
+
 def main() -> None:
+    setup()
     num_games    = args.games
     verbose      = args.verbose
     latency_warn = args.latency_warn
@@ -701,6 +718,8 @@ def main() -> None:
 
                 done = False
                 turns_played = 0
+                deaths = []
+                prev_alive = set(env.alive_indices())
                 while not done:
                     turns_played += 1
                     hisss_actions = []
@@ -719,6 +738,16 @@ def main() -> None:
                         else:
                             hisss_actions.append(hisss.UP)
                     _, done, _ = env.step(actions=tuple(hisss_actions))
+                    current_alive = set(env.alive_indices())
+                    for idx in prev_alive - current_alive:
+                        deaths.append({
+                            "game_id": game_id,
+                            "turn": turns_played,
+                            "agent": agents[idx].get_name(),
+                            "cause": "hisss_eliminated",
+                            "length": 0
+                        })
+                    prev_alive = current_alive
 
                 alive = env.alive_indices()
                 winner_idx = alive[0] if len(alive) == 1 else None
@@ -731,7 +760,7 @@ def main() -> None:
                 result = {
                     "winner": winner_idx,
                     "turns":  turns_played,
-                    "deaths": {},
+                    "deaths": deaths,
                     "hazard_deaths": 0,
                     "hazard_dmg_total": 0,
                 }
@@ -739,7 +768,7 @@ def main() -> None:
                 print(f"  [Game {g}] hisss ERROR: {exc}")
                 traceback.print_exc()
                 result = {
-                    "winner": None, "turns": 0, "deaths": {}, "error": str(exc),
+                    "winner": None, "turns": 0, "deaths": [], "error": str(exc),
                     "hazard_deaths": 0, "hazard_dmg_total": 0,
                 }
         else:
@@ -752,7 +781,7 @@ def main() -> None:
                 print(f"  [Game {g}] standalone ERROR: {exc}")
                 traceback.print_exc()
                 result = {
-                    "winner": None, "turns": 0, "deaths": {}, "error": str(exc),
+                    "winner": None, "turns": 0, "deaths": [], "error": str(exc),
                     "hazard_deaths": 0, "hazard_dmg_total": 0,
                 }
 
@@ -763,8 +792,8 @@ def main() -> None:
         w = result["winner"]
         if w is not None:
             agent_wins[agents[w].get_name()] += 1
-        for d_idx in result["deaths"]:
-            agent_deaths[agents[d_idx].get_name()] += 1
+        for d_event in result.get("deaths", []):
+            agent_deaths[d_event["agent"]] += 1
 
         total_haz_deaths += result.get("hazard_deaths", 0)
         total_haz_dmg    += result.get("hazard_dmg_total", 0)
@@ -817,6 +846,14 @@ def main() -> None:
         print(f"\n  --- Hazard stats ---")
         print(f"  Hazard-zone deaths (any agent)  : {total_haz_deaths}")
         print(f"  Total hazard damage dealt       : {total_haz_dmg} hp")
+
+    print(f"\n  --- Death Causes (All Agents) ---")
+    causes = defaultdict(int)
+    for r in results:
+        for d in r.get("deaths", []):
+            causes[d["cause"]] += 1
+    for c, count in sorted(causes.items(), key=lambda x: -x[1]):
+        print(f"  {c:<20s} : {count}")
 
     print(f"{'='*60}\n")
 

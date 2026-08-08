@@ -22,6 +22,7 @@ from main import (
     _game_memory,
     _update_food_memory,
     _update_enemy_memory,
+    _new_mem_entry,
 )
 
 # ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ class ThuebanAgent:
     def start(self, game_state) -> None:
         data    = self._to_raw(game_state)
         game_id = data.get("game", {}).get("id", "unknown")
-        _game_memory[game_id] = {"food": set(), "enemy_info": {}, "food_meta": {}, "latency_history": []}
+        _game_memory[game_id] = _new_mem_entry()
 
     def move(self, game_state):
         data    = self._to_raw(game_state)

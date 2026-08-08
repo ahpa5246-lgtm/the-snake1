@@ -1,0 +1,58 @@
+{
+  "early": {
+    "W_VORONOI": 15.0,
+    "W_FOOD": 42.21,
+    "W_KILL": 68.09,
+    "W_TAIL": 5.0,
+    "W_CENTER": 14.62,
+    "W_EDGE": 15.0,
+    "W_CORNER": 40.0,
+    "W_HAZARD": 500.0,
+    "W_GHOST": 50.0,
+    "W_CONSTRICT": 1.04,
+    "W_PIN": 1.91,
+    "W_FOG_RISK": 20.0
+  },
+  "mid": {
+    "W_VORONOI": 25.0,
+    "W_FOOD": 25.0,
+    "W_KILL": 250.0,
+    "W_TAIL": 22.24,
+    "W_CENTER": 5.0,
+    "W_EDGE": 15.0,
+    "W_CORNER": 40.0,
+    "W_HAZARD": 500.0,
+    "W_GHOST": 50.0,
+    "W_CONSTRICT": 15.0,
+    "W_PIN": 281.47,
+    "W_FOG_RISK": 35.0
+  },
+  "late_1v1": {
+    "W_VORONOI": 15.0,
+    "W_FOOD": 13.91,
+    "W_KILL": 500.0,
+    "W_TAIL": 40.0,
+    "W_CENTER": 0.31,
+    "W_EDGE": 10.0,
+    "W_CORNER": 25.0,
+    "W_HAZARD": 500.0,
+    "W_GHOST": 70.0,
+    "W_CONSTRICT": 83.75,
+    "W_PIN": 500.0,
+    "W_FOG_RISK": 50.0
+  },
+  "late_ffa": {
+    "W_VORONOI": 20.21,
+    "W_FOOD": 12.59,
+    "W_KILL": 241.38,
+    "W_TAIL": 15.4,
+    "W_CENTER": 0.0,
+    "W_EDGE": 10.88,
+    "W_CORNER": 42.56,
+    "W_HAZARD": 500.0,
+    "W_GHOST": 24.59,
+    "W_CONSTRICT": 2.55,
+    "W_PIN": 0.0,
+    "W_FOG_RISK": 37.17
+  }
+}

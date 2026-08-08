@@ -211,7 +211,7 @@ def _is_in_view(px: int, py: int, hx: int, hy: int, radius: int) -> bool:
 
 
 def _new_mem_entry() -> dict:
-    return {"food": set(), "enemy_info": {}, "food_meta": {}, "fallback_history": []}
+    return {"food": set(), "enemy_info": {}, "food_meta": {}, "fallback_history": [], "latency_history": []}
 
 
 # ===========================================================================
@@ -222,7 +222,7 @@ def _update_food_memory(game_id: str, data: dict) -> set[tuple[int, int]]:
     prev_food: set = mem.setdefault("food", set())
     food_meta: dict = mem.setdefault("food_meta", {})
 
-    you  = data["you"]
+    you  = data.get("you", {})
     head = you.get("head") or {}
     hx: int = head.get("x", 0)
     hy: int = head.get("y", 0)
@@ -261,7 +261,7 @@ def _update_enemy_memory(game_id: str, data: dict) -> dict:
     mem = _game_memory.setdefault(game_id, _new_mem_entry())
     enemy_info: dict = mem.setdefault("enemy_info", {})
 
-    you_id = data["you"]["id"]
+    you_id = data.get("you", {}).get("id", "unknown")
     snakes = data.get("board", {}).get("snakes", [])
     turn   = data.get("turn", 0)
 
