@@ -190,22 +190,38 @@ def _random_empty(occupied: set) -> Optional[tuple[int, int]]:
     return None
 
 
-def _build_occupied_sim(snakes: list[Snake]) -> set[tuple[int, int]]:
+def _build_occupied_sim(snakes: list[Snake], new_heads: dict[int, tuple[int, int]] | None = None) -> set[tuple[int, int]]:
     """
     Tail-vacating-aware occupied set for the simulator itself (mirrors logic
     in main.py's _build_occupied).  The tail is excluded unless the snake's
-    body[0] == body[-1] (i.e. it just ate — server duplicate tail signal).
+    body[-1] == body[-2] (server duplicate-tail signal for "just ate").
+
+    Also excludes current head positions of other snakes when new_heads is
+    provided, because all moves resolve simultaneously — a cell occupied by
+    another snake's head NOW will be vacated when that head moves.
     """
     occ: set[tuple[int, int]] = set()
     for s in snakes:
         if not s.alive:
             continue
-        just_ate = len(s.body) >= 2 and s.body[0] == s.body[-1]
+        # Server signals "just ate" by duplicating the tail segment:
+        #   body[-1] == body[-2].
+        # (Previously used body[0] == body[-1] which is almost never True
+        #  for a fully-extended snake — Bug fix.)
+        just_ate = len(s.body) >= 2 and s.body[-1] == s.body[-2]
         tail_idx = len(s.body) - 1
         for i, seg in enumerate(s.body):
             if i == tail_idx and not just_ate:
                 continue   # tail will vacate
             occ.add(seg)
+    # Remove current head positions that will be vacated by simultaneous moves.
+    # New head positions are checked separately (H2H for same-cell, body
+    # collision for the rest).  We only exclude heads of OTHER snakes — our
+    # own head is always in the body (index 0) and covered by the loop above.
+    if new_heads:
+        for s in snakes:
+            if s.alive and s.body:
+                occ.discard(s.body[0])  # current head will move
     return occ
 
 
@@ -215,8 +231,7 @@ def _build_occupied_sim(snakes: list[Snake]) -> set[tuple[int, int]]:
 from pydantic import BaseModel as _BM
 
 class _GS(_BM):
-    class Config:
-        extra = "allow"
+    model_config = {"extra": "allow"}
 
 def _wrap(state_dict: dict):
     return _GS.model_validate(state_dict)
@@ -312,8 +327,9 @@ def _run_standalone_game(
         alive = [i for i, s in enumerate(snakes) if s.alive]
 
         # Starvation (health checked after hazard damage below)
-        # Body collision (tail-vacating aware)
-        body_cells = _build_occupied_sim([snakes[i] for i in alive])
+        # Body collision (tail-vacating aware, head-vacating aware)
+        alive_snakes = [snakes[i] for i in alive]
+        body_cells = _build_occupied_sim(alive_snakes, new_heads)
         for i in alive:
             if new_heads[i] in body_cells:
                 snakes[i].alive = False
@@ -361,23 +377,26 @@ def _run_standalone_game(
                 snakes[i].body.pop()
             else:
                 snakes[i].health = START_HEALTH
+                # Duplicate tail segment — matches real server behaviour so
+                # that _build_occupied_sim can detect "just ate" via
+                # body[-1] == body[-2] on the NEXT turn.
+                snakes[i].body.append(snakes[i].body[-1])
                 food.remove(new_heads[i])
 
         # Hunger + hazard damage
         hazard_set = set(HAZARD_CELLS)
         for i in alive:
             snakes[i].health -= HUNGER_PER_TURN
-            if snakes[i].head in hazard_set:
+            on_hazard = snakes[i].head in hazard_set
+            if on_hazard:
                 snakes[i].health -= HAZARD_DMG
                 hazard_dmg_total += HAZARD_DMG
             if snakes[i].health <= 0:
                 snakes[i].alive = False
-                reason = "hazard+starved" if snakes[i].head in hazard_set else "starved"
+                reason = "hazard+starved" if on_hazard else "starved"
                 deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": reason, "length": snakes[i].length})
-                on_hazard = snakes[i].head in hazard_set
                 if on_hazard:
                     hazard_deaths += 1
-                reason = "hazard+starved" if on_hazard else "starved"
                 if verbose:
                     print(f"    [{snakes[i].name}] died turn {turn}: {reason}")
 
@@ -439,11 +458,13 @@ class RandomAgent:
             if not body:
                 continue
             tail_idx = len(body) - 1
-            # Detect just-ate: server duplicates tail segment when snake grew
+            # Detect just-ate: server duplicates tail segment (body[-1]==body[-2]).
+            # Uses dict equality on the serialised segments.
             just_ate = (
                 len(body) >= 2
-                and body[0] is not None
-                and body[0] == body[-1]
+                and body[-1] is not None
+                and body[-2] is not None
+                and body[-1] == body[-2]
             )
             for i, seg in enumerate(body):
                 if seg is None:
@@ -512,8 +533,9 @@ class SafeFoodSeekingAgent:
                 continue
             just_ate = (
                 len(body) >= 2
-                and body[0] is not None
-                and body[0] == body[-1]
+                and body[-1] is not None
+                and body[-2] is not None
+                and body[-1] == body[-2]
             )
             tail_idx = len(body) - 1
             for i, seg in enumerate(body):

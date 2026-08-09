@@ -122,6 +122,12 @@ class _TunedAgent:
     def start(self, state) -> None:
         self.gid = f"{self.tag}-{id(state)}-{random.random()}"
 
+    def end(self, state) -> None:
+        """Clean up game memory to prevent memory growth across tuning generations."""
+        if self.gid:
+            engine._game_memory.pop(self.gid, None)
+            self.gid = None
+
     def move(self, state):
         data = state.model_dump() if hasattr(state, "model_dump") else state
         gid = f"{self.tag}-{data['game']['id']}"
@@ -274,10 +280,10 @@ def main(args):
                     rc = subprocess.call([sys.executable, "-m", "pytest", "test_seed8_regression.py", "-v"])
                     
                     if rc == 0:
-                        best_fitness = fitness[gen_best_idx]
+                        best_fitness = val_fitness
                         best = candidate
                         save_checkpoint(population, gen, best, best_fitness)
-                        print(f"gen {gen}: NEW BEST fitness={best_fitness:.3f} (val_fitness={val_fitness:.3f})")
+                        print(f"gen {gen}: NEW BEST fitness={best_fitness:.3f} (combined={fitness[gen_best_idx]:.3f})")
                     else:
                         print(f"gen {gen}: REJECTED by regression gate")
                         if os.path.exists(BEST_PATH + ".bak"):

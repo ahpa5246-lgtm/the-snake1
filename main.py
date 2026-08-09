@@ -60,8 +60,7 @@ app = FastAPI(title="الثعبان — Battlesnake Blackout 2026", version="11.
 
 
 class GameState(BaseModel):
-    class Config:
-        extra = "allow"
+    model_config = {"extra": "allow"}
 
 
 # ---------------------------------------------------------------------------

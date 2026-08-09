@@ -40,7 +40,7 @@ def _run_seed(seed: int, games: int = 1, extra_args: list[str] | None = None) ->
 
     random.seed(seed)
     run_games.HAZARD_CELLS = []
-    run_games.HAZARD_DMG = 14
+    run_games.HAZARD_DMG = 0
     move_latency_ms.clear()
 
     all_results = []
