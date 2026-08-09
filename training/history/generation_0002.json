@@ -1,0 +1,729 @@
+{
+  "champion": {
+    "candidate": {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "production-a58a49ba1ddb8fb3",
+      "generation": 0,
+      "mutation_sigma": 0.075,
+      "parent_ids": [],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_ffa": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.00019,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.000256,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        }
+      }
+    },
+    "confidence": 1.0,
+    "generation": 0,
+    "score": 0.0
+  },
+  "generation": 2,
+  "population": [
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "champion-copy",
+      "generation": 0,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_ffa": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.00019,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.000256,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        }
+      }
+    },
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "g0001-m1359700410",
+      "generation": 1,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 177.379014,
+          "W_EDGE": 0.120496,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.002199,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.047784,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.130126,
+          "W_EDGE": 230.731736,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.018308,
+          "W_GHOST": 0.008144,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.08534,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.097218
+        },
+        "late_ffa": {
+          "W_CENTER": 0.034366,
+          "W_CONSTRICT": 0.009017,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.011888,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.014614,
+          "W_VORONOI": 0.079811
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.925191,
+          "W_KILL": 0.132471,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        }
+      }
+    },
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "g0001-m0313276059",
+      "generation": 1,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.058975,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.038544,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.093213,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.081159,
+          "W_PIN": 0.086393,
+          "W_TAIL": 0.029047,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.040577,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.107589,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.078071,
+          "W_HAZARD": 500.657012,
+          "W_KILL": 0.025911,
+          "W_PIN": 0.087857,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_ffa": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.003214,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.15316,
+          "W_PIN": 0.057588,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.006849
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.095104,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.011539,
+          "W_PIN": 0.062967,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        }
+      }
+    },
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "g0001-m9085964932",
+      "generation": 1,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.065811,
+          "W_EDGE": 0.000513,
+          "W_FOG_RISK": 0.065886,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.068211,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.03183,
+          "W_CORNER": 0.016891,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.10844,
+          "W_PIN": 0.030998,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.012388
+        },
+        "late_ffa": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.129718,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.001045,
+          "W_HAZARD": 500.379764,
+          "W_KILL": 0.00019,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.00327,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.03201,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.076094,
+          "W_HAZARD": 500.917506,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        }
+      }
+    },
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "g0001-m0421486399",
+      "generation": 1,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.042979,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.05889,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.097311,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.028148,
+          "W_HAZARD": 500.084076,
+          "W_KILL": 0.0,
+          "W_PIN": 0.100929,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.034693
+        },
+        "late_ffa": {
+          "W_CENTER": 0.020856,
+          "W_CONSTRICT": 0.069739,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.002135,
+          "W_GHOST": 0.097929,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.102182
+        },
+        "mid": {
+          "W_CENTER": 0.205919,
+          "W_CONSTRICT": 0.002239,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.062886,
+          "W_FOG_RISK": 0.024527,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.007296,
+          "W_HAZARD": 500.649036,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.037653
+        }
+      }
+    },
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "g0001-m5622235055",
+      "generation": 1,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.01095,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.011812,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.063118
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.009268,
+          "W_CORNER": 0.068205,
+          "W_EDGE": 0.019007,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 55.491474,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.457736,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.043591
+        },
+        "late_ffa": {
+          "W_CENTER": 0.035023,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.086939,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.023102,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.033541,
+          "W_TAIL": 0.06656,
+          "W_VORONOI": 0.0
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.046743,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.063477,
+          "W_FOG_RISK": 0.129839,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.002952,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.140566
+        }
+      }
+    },
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "g0001-m0976150809",
+      "generation": 1,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.075899,
+          "W_EDGE": 0.029477,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.255185,
+          "W_KILL": 0.0,
+          "W_PIN": 0.18538,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.019472,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.020691,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.00431,
+          "W_HAZARD": 501.330693,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0134,
+          "W_TAIL": 0.163635,
+          "W_VORONOI": 0.09104
+        },
+        "late_ffa": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.029945,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.147385,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.034004,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "mid": {
+          "W_CENTER": 0.054374,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.045818,
+          "W_EDGE": 0.000256,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 187.190299
+        }
+      }
+    },
+    {
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "candidate_id": "g0001-m7430503855",
+      "generation": 1,
+      "mutation_sigma": 0.075,
+      "parent_ids": [
+        "production-a58a49ba1ddb8fb3"
+      ],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.005595,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.03453,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.114681
+        },
+        "late_1v1": {
+          "W_CENTER": 0.079087,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.023297,
+          "W_EDGE": 0.060603,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.01175,
+          "W_TAIL": 0.072585,
+          "W_VORONOI": 0.0
+        },
+        "late_ffa": {
+          "W_CENTER": 37.990492,
+          "W_CONSTRICT": 0.046456,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 422.308138,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.699762,
+          "W_KILL": 0.00019,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.014957,
+          "W_VORONOI": 0.0
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.029453,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.00487,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.953882,
+          "W_KILL": 0.0,
+          "W_PIN": 0.133851,
+          "W_TAIL": 0.137708,
+          "W_VORONOI": 0.018358
+        }
+      }
+    }
+  ],
+  "timestamp": 1786297479.5994954
+}

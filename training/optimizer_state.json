@@ -1,7 +1,20 @@
 {
   "champion": {
     "candidate": {
-      "aggregate": null,
+      "aggregate": {
+        "avg_latency": 0.0,
+        "avg_length": 0.0,
+        "avg_placement": 2.5,
+        "avg_turns": 0.0,
+        "games": 12,
+        "mean_score": 0.0,
+        "stdev_score": 0.0,
+        "survival_rate": 0.0,
+        "survivals": 0,
+        "unsafe_moves": 0.0,
+        "win_rate": 0.0,
+        "wins": 0
+      },
       "candidate_id": "production-a58a49ba1ddb8fb3",
       "generation": 0,
       "mutation_sigma": 0.075,
@@ -65,11 +78,11 @@
         }
       }
     },
-    "confidence": 0.0,
+    "confidence": 1.0,
     "generation": 0,
     "score": 0.0
   },
-  "generation": 0,
+  "generation": 2,
   "seed": 20260809,
-  "timestamp": 1786297104.483452
+  "timestamp": 1786300305.2472136
 }
