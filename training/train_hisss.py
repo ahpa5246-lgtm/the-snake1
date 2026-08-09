@@ -151,7 +151,10 @@ class _CandidateAgent:
         if self.weights is not None:
             engine.PHASE_WEIGHTS.update(self.weights)
         mv = self._agent.move(rg._wrap(self._tagged(state_dict)))
-        return str(mv.move).lower() if hasattr(mv, "move") else str(mv).lower()
+        d = str(mv.move).lower().split(".")[-1] if hasattr(mv, "move") else str(mv).lower()
+        for k in DIR_TO_HISSS:
+            if k in d: return k
+        return "up"
 
     def end(self, state_dict: dict) -> None:
         self._agent.end(rg._wrap(self._tagged(state_dict)))
