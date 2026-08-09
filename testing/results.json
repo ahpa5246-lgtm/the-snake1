@@ -1,0 +1,1834 @@
+{
+  "production": {
+    "label": "prod",
+    "games": 100,
+    "win_rate": 0.34,
+    "survival_rate": 0.78,
+    "avg_placement": 2.1,
+    "avg_turns": 218.19,
+    "avg_length": 12.68,
+    "unsafe_moves": 0,
+    "avg_time_s": 1.5120300000000133,
+    "fog_checks": 21818,
+    "fog_hidden_hits": 21714,
+    "fog_occluded_enemy_observations": 0
+  },
+  "trained": {
+    "label": "trained",
+    "games": 100,
+    "win_rate": 0.59,
+    "survival_rate": 0.94,
+    "avg_placement": 1.52,
+    "avg_turns": 190.8,
+    "avg_length": 21.27,
+    "unsafe_moves": 4,
+    "avg_time_s": 1.2643799999999827,
+    "fog_checks": 19079,
+    "fog_hidden_hits": 18760,
+    "fog_occluded_enemy_observations": 0
+  },
+  "production_games": [
+    {
+      "game": 0,
+      "winner": false,
+      "survived": false,
+      "turns": 269,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 1,
+      "winner": false,
+      "survived": false,
+      "turns": 301,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 2,
+      "winner": false,
+      "survived": true,
+      "turns": 336,
+      "length": 26,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 3,
+      "winner": false,
+      "survived": true,
+      "turns": 213,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 4,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 5,
+      "winner": false,
+      "survived": true,
+      "turns": 115,
+      "length": 5,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 6,
+      "winner": false,
+      "survived": true,
+      "turns": 140,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 7,
+      "winner": true,
+      "survived": true,
+      "turns": 152,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 8,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 22,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 9,
+      "winner": false,
+      "survived": false,
+      "turns": 136,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 10,
+      "winner": true,
+      "survived": true,
+      "turns": 19,
+      "length": 5,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 11,
+      "winner": true,
+      "survived": true,
+      "turns": 155,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 12,
+      "winner": true,
+      "survived": true,
+      "turns": 150,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 13,
+      "winner": true,
+      "survived": true,
+      "turns": 357,
+      "length": 31,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 14,
+      "winner": false,
+      "survived": false,
+      "turns": 373,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 15,
+      "winner": false,
+      "survived": false,
+      "turns": 91,
+      "length": 9,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 16,
+      "winner": false,
+      "survived": true,
+      "turns": 312,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 17,
+      "winner": true,
+      "survived": true,
+      "turns": 49,
+      "length": 5,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 18,
+      "winner": false,
+      "survived": false,
+      "turns": 330,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 19,
+      "winner": false,
+      "survived": true,
+      "turns": 394,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 20,
+      "winner": true,
+      "survived": true,
+      "turns": 39,
+      "length": 7,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 21,
+      "winner": false,
+      "survived": true,
+      "turns": 101,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 22,
+      "winner": false,
+      "survived": false,
+      "turns": 67,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 23,
+      "winner": false,
+      "survived": false,
+      "turns": 257,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 24,
+      "winner": false,
+      "survived": false,
+      "turns": 96,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 25,
+      "winner": false,
+      "survived": true,
+      "turns": 275,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 26,
+      "winner": false,
+      "survived": true,
+      "turns": 347,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 27,
+      "winner": false,
+      "survived": true,
+      "turns": 196,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 28,
+      "winner": true,
+      "survived": true,
+      "turns": 393,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 29,
+      "winner": true,
+      "survived": true,
+      "turns": 244,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 30,
+      "winner": false,
+      "survived": true,
+      "turns": 258,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 31,
+      "winner": false,
+      "survived": false,
+      "turns": 140,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 32,
+      "winner": true,
+      "survived": true,
+      "turns": 188,
+      "length": 18,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 33,
+      "winner": false,
+      "survived": true,
+      "turns": 205,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 34,
+      "winner": false,
+      "survived": true,
+      "turns": 313,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 35,
+      "winner": false,
+      "survived": true,
+      "turns": 319,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 36,
+      "winner": true,
+      "survived": true,
+      "turns": 157,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 37,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 38,
+      "winner": true,
+      "survived": true,
+      "turns": 261,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 39,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 27,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 40,
+      "winner": true,
+      "survived": true,
+      "turns": 396,
+      "length": 18,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 41,
+      "winner": true,
+      "survived": true,
+      "turns": 27,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 42,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 21,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 43,
+      "winner": false,
+      "survived": true,
+      "turns": 211,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 44,
+      "winner": true,
+      "survived": true,
+      "turns": 249,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 45,
+      "winner": false,
+      "survived": false,
+      "turns": 81,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 46,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 47,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 48,
+      "winner": false,
+      "survived": false,
+      "turns": 385,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 49,
+      "winner": true,
+      "survived": true,
+      "turns": 45,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 50,
+      "winner": false,
+      "survived": true,
+      "turns": 178,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 51,
+      "winner": false,
+      "survived": true,
+      "turns": 115,
+      "length": 9,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 52,
+      "winner": false,
+      "survived": false,
+      "turns": 194,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 53,
+      "winner": true,
+      "survived": true,
+      "turns": 26,
+      "length": 5,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 54,
+      "winner": false,
+      "survived": false,
+      "turns": 331,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 55,
+      "winner": true,
+      "survived": true,
+      "turns": 51,
+      "length": 5,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 56,
+      "winner": false,
+      "survived": false,
+      "turns": 133,
+      "length": 9,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 57,
+      "winner": true,
+      "survived": true,
+      "turns": 9,
+      "length": 4,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 58,
+      "winner": false,
+      "survived": true,
+      "turns": 113,
+      "length": 9,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 59,
+      "winner": true,
+      "survived": true,
+      "turns": 175,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 60,
+      "winner": true,
+      "survived": true,
+      "turns": 13,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 61,
+      "winner": false,
+      "survived": false,
+      "turns": 92,
+      "length": 7,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 62,
+      "winner": true,
+      "survived": true,
+      "turns": 242,
+      "length": 24,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 63,
+      "winner": false,
+      "survived": true,
+      "turns": 115,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 64,
+      "winner": false,
+      "survived": false,
+      "turns": 301,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 65,
+      "winner": false,
+      "survived": true,
+      "turns": 267,
+      "length": 9,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 66,
+      "winner": false,
+      "survived": true,
+      "turns": 386,
+      "length": 18,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 67,
+      "winner": false,
+      "survived": true,
+      "turns": 255,
+      "length": 10,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 68,
+      "winner": false,
+      "survived": true,
+      "turns": 180,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 69,
+      "winner": false,
+      "survived": true,
+      "turns": 125,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 70,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 71,
+      "winner": false,
+      "survived": false,
+      "turns": 343,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 72,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 73,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 74,
+      "winner": false,
+      "survived": false,
+      "turns": 136,
+      "length": 7,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 75,
+      "winner": true,
+      "survived": true,
+      "turns": 256,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 76,
+      "winner": false,
+      "survived": false,
+      "turns": 327,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 77,
+      "winner": false,
+      "survived": true,
+      "turns": 115,
+      "length": 10,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 78,
+      "winner": true,
+      "survived": true,
+      "turns": 147,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 79,
+      "winner": false,
+      "survived": true,
+      "turns": 127,
+      "length": 10,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 80,
+      "winner": false,
+      "survived": true,
+      "turns": 212,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 81,
+      "winner": true,
+      "survived": true,
+      "turns": 48,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 82,
+      "winner": true,
+      "survived": true,
+      "turns": 225,
+      "length": 23,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 83,
+      "winner": false,
+      "survived": true,
+      "turns": 137,
+      "length": 7,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 84,
+      "winner": false,
+      "survived": true,
+      "turns": 206,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 85,
+      "winner": true,
+      "survived": true,
+      "turns": 203,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 86,
+      "winner": true,
+      "survived": true,
+      "turns": 200,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 87,
+      "winner": false,
+      "survived": false,
+      "turns": 169,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 88,
+      "winner": true,
+      "survived": true,
+      "turns": 152,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 89,
+      "winner": true,
+      "survived": true,
+      "turns": 357,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 90,
+      "winner": false,
+      "survived": false,
+      "turns": 137,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 91,
+      "winner": true,
+      "survived": true,
+      "turns": 109,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 92,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 93,
+      "winner": true,
+      "survived": true,
+      "turns": 295,
+      "length": 24,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 94,
+      "winner": false,
+      "survived": true,
+      "turns": 135,
+      "length": 6,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 95,
+      "winner": false,
+      "survived": true,
+      "turns": 113,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 96,
+      "winner": false,
+      "survived": true,
+      "turns": 128,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 97,
+      "winner": true,
+      "survived": true,
+      "turns": 99,
+      "length": 10,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 98,
+      "winner": true,
+      "survived": true,
+      "turns": 200,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 99,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 2
+    }
+  ],
+  "trained_games": [
+    {
+      "game": 0,
+      "winner": true,
+      "survived": true,
+      "turns": 222,
+      "length": 21,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 1,
+      "winner": true,
+      "survived": true,
+      "turns": 183,
+      "length": 27,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 2,
+      "winner": true,
+      "survived": true,
+      "turns": 145,
+      "length": 25,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 3,
+      "winner": true,
+      "survived": true,
+      "turns": 58,
+      "length": 10,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 4,
+      "winner": true,
+      "survived": true,
+      "turns": 51,
+      "length": 5,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 5,
+      "winner": true,
+      "survived": true,
+      "turns": 191,
+      "length": 23,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 6,
+      "winner": true,
+      "survived": true,
+      "turns": 116,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 7,
+      "winner": false,
+      "survived": true,
+      "turns": 175,
+      "length": 18,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 8,
+      "winner": true,
+      "survived": true,
+      "turns": 198,
+      "length": 19,
+      "unsafe_moves": 1,
+      "placement": 1
+    },
+    {
+      "game": 9,
+      "winner": false,
+      "survived": true,
+      "turns": 224,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 10,
+      "winner": false,
+      "survived": true,
+      "turns": 233,
+      "length": 30,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 11,
+      "winner": false,
+      "survived": true,
+      "turns": 105,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 12,
+      "winner": true,
+      "survived": true,
+      "turns": 117,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 13,
+      "winner": true,
+      "survived": true,
+      "turns": 224,
+      "length": 21,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 14,
+      "winner": false,
+      "survived": true,
+      "turns": 247,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 15,
+      "winner": true,
+      "survived": true,
+      "turns": 140,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 16,
+      "winner": true,
+      "survived": true,
+      "turns": 159,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 17,
+      "winner": true,
+      "survived": true,
+      "turns": 306,
+      "length": 34,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 18,
+      "winner": false,
+      "survived": true,
+      "turns": 329,
+      "length": 41,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 19,
+      "winner": false,
+      "survived": true,
+      "turns": 304,
+      "length": 25,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 20,
+      "winner": true,
+      "survived": true,
+      "turns": 145,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 21,
+      "winner": false,
+      "survived": true,
+      "turns": 95,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 22,
+      "winner": true,
+      "survived": true,
+      "turns": 159,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 23,
+      "winner": true,
+      "survived": true,
+      "turns": 146,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 24,
+      "winner": false,
+      "survived": true,
+      "turns": 239,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 25,
+      "winner": true,
+      "survived": true,
+      "turns": 290,
+      "length": 24,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 26,
+      "winner": true,
+      "survived": true,
+      "turns": 157,
+      "length": 18,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 27,
+      "winner": false,
+      "survived": true,
+      "turns": 117,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 28,
+      "winner": false,
+      "survived": true,
+      "turns": 279,
+      "length": 35,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 29,
+      "winner": true,
+      "survived": true,
+      "turns": 314,
+      "length": 30,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 30,
+      "winner": false,
+      "survived": true,
+      "turns": 270,
+      "length": 34,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 31,
+      "winner": false,
+      "survived": true,
+      "turns": 252,
+      "length": 35,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 32,
+      "winner": true,
+      "survived": true,
+      "turns": 215,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 33,
+      "winner": false,
+      "survived": true,
+      "turns": 148,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 34,
+      "winner": true,
+      "survived": true,
+      "turns": 63,
+      "length": 7,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 35,
+      "winner": false,
+      "survived": true,
+      "turns": 202,
+      "length": 24,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 36,
+      "winner": false,
+      "survived": true,
+      "turns": 324,
+      "length": 41,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 37,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 39,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 38,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 39,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 39,
+      "winner": true,
+      "survived": true,
+      "turns": 291,
+      "length": 31,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 40,
+      "winner": true,
+      "survived": true,
+      "turns": 194,
+      "length": 18,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 41,
+      "winner": true,
+      "survived": true,
+      "turns": 354,
+      "length": 34,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 42,
+      "winner": true,
+      "survived": true,
+      "turns": 171,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 43,
+      "winner": true,
+      "survived": true,
+      "turns": 161,
+      "length": 18,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 44,
+      "winner": true,
+      "survived": true,
+      "turns": 294,
+      "length": 36,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 45,
+      "winner": true,
+      "survived": true,
+      "turns": 179,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 46,
+      "winner": true,
+      "survived": true,
+      "turns": 8,
+      "length": 4,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 47,
+      "winner": true,
+      "survived": true,
+      "turns": 28,
+      "length": 5,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 48,
+      "winner": true,
+      "survived": true,
+      "turns": 150,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 49,
+      "winner": true,
+      "survived": true,
+      "turns": 189,
+      "length": 28,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 50,
+      "winner": true,
+      "survived": true,
+      "turns": 126,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 51,
+      "winner": true,
+      "survived": true,
+      "turns": 239,
+      "length": 35,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 52,
+      "winner": false,
+      "survived": false,
+      "turns": 72,
+      "length": 4,
+      "unsafe_moves": 1,
+      "placement": 3
+    },
+    {
+      "game": 53,
+      "winner": false,
+      "survived": true,
+      "turns": 276,
+      "length": 35,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 54,
+      "winner": false,
+      "survived": true,
+      "turns": 181,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 55,
+      "winner": false,
+      "survived": false,
+      "turns": 126,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 56,
+      "winner": true,
+      "survived": true,
+      "turns": 295,
+      "length": 31,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 57,
+      "winner": true,
+      "survived": true,
+      "turns": 108,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 58,
+      "winner": true,
+      "survived": true,
+      "turns": 137,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 59,
+      "winner": false,
+      "survived": false,
+      "turns": 202,
+      "length": 27,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 60,
+      "winner": true,
+      "survived": true,
+      "turns": 103,
+      "length": 15,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 61,
+      "winner": true,
+      "survived": true,
+      "turns": 318,
+      "length": 34,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 62,
+      "winner": true,
+      "survived": true,
+      "turns": 244,
+      "length": 35,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 63,
+      "winner": false,
+      "survived": false,
+      "turns": 66,
+      "length": 7,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 64,
+      "winner": true,
+      "survived": true,
+      "turns": 199,
+      "length": 22,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 65,
+      "winner": false,
+      "survived": true,
+      "turns": 304,
+      "length": 31,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 66,
+      "winner": false,
+      "survived": true,
+      "turns": 400,
+      "length": 43,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 67,
+      "winner": false,
+      "survived": true,
+      "turns": 99,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 68,
+      "winner": true,
+      "survived": true,
+      "turns": 173,
+      "length": 21,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 69,
+      "winner": true,
+      "survived": true,
+      "turns": 225,
+      "length": 16,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 70,
+      "winner": false,
+      "survived": true,
+      "turns": 254,
+      "length": 30,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 71,
+      "winner": true,
+      "survived": true,
+      "turns": 84,
+      "length": 7,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 72,
+      "winner": false,
+      "survived": true,
+      "turns": 105,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 73,
+      "winner": false,
+      "survived": false,
+      "turns": 87,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 4
+    },
+    {
+      "game": 74,
+      "winner": false,
+      "survived": true,
+      "turns": 212,
+      "length": 26,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 75,
+      "winner": false,
+      "survived": true,
+      "turns": 359,
+      "length": 45,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 76,
+      "winner": true,
+      "survived": true,
+      "turns": 194,
+      "length": 27,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 77,
+      "winner": true,
+      "survived": true,
+      "turns": 64,
+      "length": 7,
+      "unsafe_moves": 1,
+      "placement": 1
+    },
+    {
+      "game": 78,
+      "winner": false,
+      "survived": true,
+      "turns": 370,
+      "length": 43,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 79,
+      "winner": true,
+      "survived": true,
+      "turns": 54,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 80,
+      "winner": true,
+      "survived": true,
+      "turns": 61,
+      "length": 8,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 81,
+      "winner": false,
+      "survived": false,
+      "turns": 45,
+      "length": 6,
+      "unsafe_moves": 1,
+      "placement": 4
+    },
+    {
+      "game": 82,
+      "winner": true,
+      "survived": true,
+      "turns": 192,
+      "length": 27,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 83,
+      "winner": false,
+      "survived": true,
+      "turns": 158,
+      "length": 17,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 84,
+      "winner": true,
+      "survived": true,
+      "turns": 238,
+      "length": 25,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 85,
+      "winner": false,
+      "survived": true,
+      "turns": 245,
+      "length": 32,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 86,
+      "winner": true,
+      "survived": true,
+      "turns": 147,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 87,
+      "winner": true,
+      "survived": true,
+      "turns": 152,
+      "length": 14,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 88,
+      "winner": true,
+      "survived": true,
+      "turns": 123,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 89,
+      "winner": true,
+      "survived": true,
+      "turns": 110,
+      "length": 11,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 90,
+      "winner": true,
+      "survived": true,
+      "turns": 184,
+      "length": 21,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 91,
+      "winner": false,
+      "survived": true,
+      "turns": 202,
+      "length": 25,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 92,
+      "winner": false,
+      "survived": true,
+      "turns": 337,
+      "length": 37,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 93,
+      "winner": true,
+      "survived": true,
+      "turns": 175,
+      "length": 19,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 94,
+      "winner": true,
+      "survived": true,
+      "turns": 100,
+      "length": 13,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 95,
+      "winner": false,
+      "survived": true,
+      "turns": 148,
+      "length": 21,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 96,
+      "winner": false,
+      "survived": true,
+      "turns": 242,
+      "length": 32,
+      "unsafe_moves": 0,
+      "placement": 2
+    },
+    {
+      "game": 97,
+      "winner": true,
+      "survived": true,
+      "turns": 254,
+      "length": 24,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 98,
+      "winner": true,
+      "survived": true,
+      "turns": 108,
+      "length": 12,
+      "unsafe_moves": 0,
+      "placement": 1
+    },
+    {
+      "game": 99,
+      "winner": false,
+      "survived": true,
+      "turns": 222,
+      "length": 31,
+      "unsafe_moves": 0,
+      "placement": 2
+    }
+  ]
+}
