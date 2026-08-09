@@ -27,6 +27,14 @@ except ImportError:
 DIR_MAP = {"up": hisss.UP, "down": hisss.DOWN, "left": hisss.LEFT, "right": hisss.RIGHT}
 
 
+def to_direction(mv) -> str:
+    if hasattr(mv, "move"):
+        mv = mv.move
+    if hasattr(mv, "value"):
+        return str(mv.value).lower()
+    return str(mv).lower()
+
+
 class Candidate:
     def __init__(self, weights, tag):
         self.weights = {engine.GamePhase(p): w for p, w in weights.items()}
@@ -47,8 +55,7 @@ class Candidate:
 
     def move(self, d):
         engine.PHASE_WEIGHTS.update(self.weights)
-        mv = self.agent.move(rg._wrap(self._tag(d)))
-        return str(mv.move).lower() if hasattr(mv, "move") else str(mv).lower()
+        return self.agent.move(rg._wrap(self._tag(d)))
 
     def end(self, d):
         self.agent.end(rg._wrap(self._tag(d)))
@@ -68,8 +75,7 @@ class HungryWrap:
             pass
 
     def move(self, d):
-        mv = self.a.move(StarterGameState.model_validate(d))
-        return mv.move.value if hasattr(mv.move, "value") else str(mv.move)
+        return self.a.move(StarterGameState.model_validate(d))
 
     def end(self, d):
         try:
@@ -129,6 +135,7 @@ def play_game(players, max_turns=400, fog_idx=None, fog_stats=None):
                 fog_stats["occluded_enemy_count"] += max(0, (len(env.players_alive()) - 1) - seen)
             try:
                 mv = players[idx].move(d)
+                mv = to_direction(mv)
             except Exception:
                 mv = "up"
             legal = env.available_actions(idx)
