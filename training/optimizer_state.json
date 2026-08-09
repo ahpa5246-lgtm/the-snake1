@@ -1,0 +1,75 @@
+{
+  "champion": {
+    "candidate": {
+      "aggregate": null,
+      "candidate_id": "production-a58a49ba1ddb8fb3",
+      "generation": 0,
+      "mutation_sigma": 0.075,
+      "parent_ids": [],
+      "weights": {
+        "early": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_1v1": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "late_ffa": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.0,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.00019,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        },
+        "mid": {
+          "W_CENTER": 0.0,
+          "W_CONSTRICT": 0.0,
+          "W_CORNER": 0.0,
+          "W_EDGE": 0.000256,
+          "W_FOG_RISK": 0.0,
+          "W_FOOD": 0.0,
+          "W_GHOST": 0.0,
+          "W_HAZARD": 500.0,
+          "W_KILL": 0.0,
+          "W_PIN": 0.0,
+          "W_TAIL": 0.0,
+          "W_VORONOI": 0.0
+        }
+      }
+    },
+    "confidence": 0.0,
+    "generation": 0,
+    "score": 0.0
+  },
+  "generation": 0,
+  "seed": 20260809,
+  "timestamp": 1786295173.8949015
+}
