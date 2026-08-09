@@ -1,509 +1,2777 @@
-"""
-training/train_hisss.py
-
-Trains PHASE_WEIGHTS candidates using the REAL hisss.BattleSnakeGame engine
-and the EXISTING, UNMODIFIED agent_adapter.ThuebanAgent (main.TacticalEngine).
-
-What this does NOT do:
-  - It does not reimplement Battlesnake rules. Every game step is
-    hisss.BattleSnakeGame.step(). No custom/fake simulator is used.
-  - It does not replace or fork TacticalEngine. Candidate weights are
-    evaluated by monkey-patching main.PHASE_WEIGHTS to the candidate's
-    values immediately before each ThuebanAgent.move() call -- the exact
-    same mechanism main.py's own _load_weight_overrides()/weights.json
-    already uses in production. The agent code itself is never touched.
-  - It does not overwrite production weights.json during training. Results
-    go to training/checkpoints/. Use --promote to copy the best candidate
-    into weights.json, which first re-validates it against
-    test_seed8_regression.py and keeps a timestamped backup.
-
-Verified before delivery (see chat transcript / VERIFY_LOG.txt):
-  - hisss.BattleSnakeGame.__module__ contains "hisss" (real engine, not a stub)
-  - 0 illegal moves across a 300-turn real game (cross-checked against
-    env.available_actions() every single turn)
-  - snake length increases and health resets confirm food is actually eaten
-  - players_alive() shrinking confirms real eliminations happen
-  - multiprocessing workers each import hisss independently without conflict
-
-Usage:
-  python3 training/train_hisss.py --minutes 5                 # smoke test
-  python3 training/train_hisss.py --minutes 480 --resume       # long run
-  python3 training/train_hisss.py --promote                    # validate +
-                                                                 # publish best
-"""
+# training/train_blackout_elite.py
+#
+# Battlesnake Blackout 2026
+# Elite evolutionary optimizer for phase-dependent PHASE_WEIGHTS.
+#
+# Design goals:
+#   - Preserve the incumbent champion.
+#   - Never promote a candidate on a single noisy batch.
+#   - Evaluate candidates against diverse opponents.
+#   - Use common random seeds inside candidate-vs-champion comparisons.
+#   - Penalize unsafe moves and latency regressions.
+#   - Maintain a Hall of Fame.
+#   - Resume safely after interruption.
+#   - Keep production weights untouched until promotion.
+#
+# Expected project layout:
+#
+#   the snake1/
+#       main.py
+#       weights.json
+#       run_games.py
+#       agent_adapter.py
+#       battlesnake_types.py
+#       tests/
+#       training/
+#
+# Usage:
+#
+#   py -3.12 training\train_blackout_elite.py --generations 50
+#
+# Conservative first run:
+#
+#   py -3.12 training\train_blackout_elite.py ^
+#       --generations 25 ^
+#       --population 12 ^
+#       --games 24
+#
+# Resume:
+#
+#   py -3.12 training\train_blackout_elite.py --resume
+#
+# Aggressive:
+#
+#   py -3.12 training\train_blackout_elite.py ^
+#       --generations 200 ^
+#       --population 24 ^
+#       --games 40
+#
+# IMPORTANT:
+# This program writes candidate checkpoints under training/checkpoints/
+# and does NOT replace weights.json unless the promotion gate accepts
+# the candidate.
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import copy
-import io
+import csv
+import hashlib
 import json
-import logging
-import multiprocessing as mp
+import math
 import os
 import random
 import shutil
-import signal
+import statistics
 import subprocess
 import sys
+import tempfile
 import time
-
-REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO_DIR)
-
-# run_games.py parses sys.argv with argparse at import time -- neutralize
-# this process's own CLI args before importing it (same fix used in the
-# existing tune_weights.py).
-_real_argv = sys.argv
-sys.argv = [_real_argv[0]]
-import run_games as rg  # noqa: E402
-sys.argv = _real_argv
-
-try:
-    import hisss  # noqa: E402
-except ImportError as e:
-    print("ERROR: the 'hisss' package is not installed in this Python "
-          "environment. Install it with `pip install hisss` and re-run.")
-    raise SystemExit(1) from e
-
-import main as engine  # noqa: E402
-import agent_adapter  # noqa: E402
-from agent_adapter import ThuebanAgent  # noqa: E402
-
-logging.getLogger("battlesnake").setLevel(logging.CRITICAL)
-
-CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
-os.makedirs(CKPT_DIR, exist_ok=True)
-CKPT_PATH = os.path.join(CKPT_DIR, "checkpoint.json")
-BEST_PATH = os.path.join(CKPT_DIR, "best_weights.json")
-PROD_WEIGHTS_PATH = os.path.join(REPO_DIR, "weights.json")
-
-PHASES = [p.value for p in engine.GamePhase]
-WEIGHT_KEYS = list(engine.PHASE_WEIGHTS[engine.GamePhase.EARLY].keys())
-
-DIR_TO_HISSS = {"up": hisss.UP, "down": hisss.DOWN, "left": hisss.LEFT, "right": hisss.RIGHT}
-MAX_TURNS = 400
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Iterable
 
 
-# ---------------------------------------------------------------------------
-# Individual = dict[phase_name][weight_name] -> float  (same shape as
-# main.PHASE_WEIGHTS / weights.json)
-# ---------------------------------------------------------------------------
-def load_production_weights() -> dict:
-    """Current committed weights.json, or main.py's built-in defaults if the
-    file is missing. Training starts from here, not from scratch."""
-    if os.path.isfile(PROD_WEIGHTS_PATH):
-        with open(PROD_WEIGHTS_PATH) as f:
-            data = json.load(f)
-        if all(p in data for p in PHASES):
-            return data
-    return {p.value: dict(w) for p, w in engine.PHASE_WEIGHTS.items()}
+# ============================================================================
+# PATHS
+# ============================================================================
+
+HERE = Path(__file__).resolve()
+TRAINING_DIR = HERE.parent
+REPO = TRAINING_DIR.parent
+
+WEIGHTS_PATH = REPO / "weights.json"
+CHECKPOINT_DIR = TRAINING_DIR / "checkpoints"
+HISTORY_DIR = TRAINING_DIR / "history"
+ARCHIVE_DIR = TRAINING_DIR / "archive"
+STATE_PATH = TRAINING_DIR / "optimizer_state.json"
+
+RESULTS_DIR = REPO / "testing"
+
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def mutate(ind: dict, rate: float = 0.35, strength: float = 0.35) -> dict:
-    out = copy.deepcopy(ind)
-    for phase in PHASES:
-        for k in WEIGHT_KEYS:
-            if random.random() > rate:
-                continue
-            v = out[phase][k]
-            factor = 1.0 + random.uniform(-strength, strength)
-            v = v * factor + random.gauss(0, 3.0)
-            out[phase][k] = round(max(0.0, v), 2)
-    return out
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+PHASES = (
+    "early",
+    "mid",
+    "late_1v1",
+    "late_ffa",
+)
+
+FEATURES = (
+    "W_VORONOI",
+    "W_FOOD",
+    "W_KILL",
+    "W_TAIL",
+    "W_CENTER",
+    "W_EDGE",
+    "W_CORNER",
+    "W_HAZARD",
+    "W_GHOST",
+    "W_CONSTRICT",
+    "W_PIN",
+    "W_FOG_RISK",
+)
+
+BASE_WEIGHTS = {
+    "early": {
+        "W_VORONOI": 15.0,
+        "W_FOOD": 40.0,
+        "W_KILL": 100.0,
+        "W_TAIL": 5.0,
+        "W_CENTER": 15.0,
+        "W_EDGE": 15.0,
+        "W_CORNER": 40.0,
+        "W_HAZARD": 1000.0,
+        "W_GHOST": 50.0,
+        "W_CONSTRICT": 0.0,
+        "W_PIN": 0.0,
+        "W_FOG_RISK": 20.0,
+    },
+    "mid": {
+        "W_VORONOI": 25.0,
+        "W_FOOD": 25.0,
+        "W_KILL": 250.0,
+        "W_TAIL": 15.0,
+        "W_CENTER": 5.0,
+        "W_EDGE": 15.0,
+        "W_CORNER": 40.0,
+        "W_HAZARD": 1000.0,
+        "W_GHOST": 50.0,
+        "W_CONSTRICT": 15.0,
+        "W_PIN": 200.0,
+        "W_FOG_RISK": 35.0,
+    },
+    "late_1v1": {
+        "W_VORONOI": 15.0,
+        "W_FOOD": 10.0,
+        "W_KILL": 1500.0,
+        "W_TAIL": 40.0,
+        "W_CENTER": 0.0,
+        "W_EDGE": 10.0,
+        "W_CORNER": 25.0,
+        "W_HAZARD": 1000.0,
+        "W_GHOST": 70.0,
+        "W_CONSTRICT": 55.0,
+        "W_PIN": 1500.0,
+        "W_FOG_RISK": 50.0,
+    },
+    "late_ffa": {
+        "W_VORONOI": 30.0,
+        "W_FOOD": 20.0,
+        "W_KILL": 400.0,
+        "W_TAIL": 20.0,
+        "W_CENTER": 0.0,
+        "W_EDGE": 15.0,
+        "W_CORNER": 40.0,
+        "W_HAZARD": 1000.0,
+        "W_GHOST": 50.0,
+        "W_CONSTRICT": 0.0,
+        "W_PIN": 0.0,
+        "W_FOG_RISK": 30.0,
+    },
+}
 
 
-def crossover(a: dict, b: dict) -> dict:
+# ============================================================================
+# FEATURE RANGES
+# ============================================================================
+
+# The optimizer must not wander into absurd values.
+#
+# These ranges deliberately cover the existing weights while leaving room
+# for meaningful exploration.
+
+RANGES = {
+    "W_VORONOI": (0.0, 250.0),
+    "W_FOOD": (0.0, 250.0),
+    "W_KILL": (0.0, 5000.0),
+    "W_TAIL": (0.0, 250.0),
+    "W_CENTER": (0.0, 250.0),
+    "W_EDGE": (0.0, 250.0),
+    "W_CORNER": (0.0, 500.0),
+    "W_HAZARD": (500.0, 5000.0),
+    "W_GHOST": (0.0, 500.0),
+    "W_CONSTRICT": (0.0, 500.0),
+    "W_PIN": (0.0, 5000.0),
+    "W_FOG_RISK": (0.0, 500.0),
+}
+
+
+# ============================================================================
+# PHASE MUTATION STRENGTH
+# ============================================================================
+
+PHASE_MUTATION_SCALE = {
+    "early": 0.075,
+    "mid": 0.075,
+    "late_1v1": 0.055,
+    "late_ffa": 0.075,
+}
+
+
+# ============================================================================
+# OPPONENT CONFIGURATION
+# ============================================================================
+
+OPPONENTS = (
+    "random",
+    "safe_food",
+    "hungry",
+)
+
+# A candidate is evaluated in multiple opponent compositions.
+OPPONENT_SCENARIOS = (
+    ("random", "random", "safe_food"),
+    ("random", "safe_food", "hungry"),
+    ("safe_food", "safe_food", "random"),
+    ("safe_food", "hungry", "random"),
+    ("hungry", "random", "safe_food"),
+    ("hungry", "safe_food", "safe_food"),
+)
+
+
+# ============================================================================
+# ENUMS
+# ============================================================================
+
+class Outcome(str, Enum):
+    WIN = "win"
+    SURVIVED = "survived"
+    LOST = "lost"
+
+
+# ============================================================================
+# DATACLASSES
+# ============================================================================
+
+@dataclass
+class GameMetric:
+    win: bool = False
+    survived: bool = False
+    placement: float = 4.0
+    turns: float = 0.0
+    length: float = 0.0
+    unsafe_moves: float = 0.0
+    latency: float = 0.0
+
+    @property
+    def score(self) -> float:
+        return (
+            (1.0 if self.win else 0.0) * 100.0
+            + (1.0 if self.survived else 0.0) * 25.0
+            + max(0.0, 5.0 - self.placement) * 10.0
+            + min(self.turns, 400.0) * 0.035
+            + min(self.length, 50.0) * 0.35
+            - self.unsafe_moves * 12.0
+            - max(0.0, self.latency - 0.10) * 15.0
+        )
+
+
+@dataclass
+class Aggregate:
+    games: int = 0
+    wins: int = 0
+    survivals: int = 0
+    placement_sum: float = 0.0
+    turns_sum: float = 0.0
+    length_sum: float = 0.0
+    unsafe_sum: float = 0.0
+    latency_sum: float = 0.0
+    scores: list[float] = field(default_factory=list)
+
+    def add(self, metric: GameMetric) -> None:
+        self.games += 1
+        self.wins += int(metric.win)
+        self.survivals += int(metric.survived)
+        self.placement_sum += metric.placement
+        self.turns_sum += metric.turns
+        self.length_sum += metric.length
+        self.unsafe_sum += metric.unsafe_moves
+        self.latency_sum += metric.latency
+        self.scores.append(metric.score)
+
+    @property
+    def win_rate(self) -> float:
+        return self.wins / self.games if self.games else 0.0
+
+    @property
+    def survival_rate(self) -> float:
+        return self.survivals / self.games if self.games else 0.0
+
+    @property
+    def avg_placement(self) -> float:
+        return self.placement_sum / self.games if self.games else 99.0
+
+    @property
+    def avg_turns(self) -> float:
+        return self.turns_sum / self.games if self.games else 0.0
+
+    @property
+    def avg_length(self) -> float:
+        return self.length_sum / self.games if self.games else 0.0
+
+    @property
+    def unsafe_moves(self) -> float:
+        return self.unsafe_sum
+
+    @property
+    def avg_latency(self) -> float:
+        return self.latency_sum / self.games if self.games else 999.0
+
+    @property
+    def mean_score(self) -> float:
+        return statistics.fmean(self.scores) if self.scores else -999999.0
+
+    @property
+    def stdev_score(self) -> float:
+        if len(self.scores) < 2:
+            return 0.0
+        return statistics.stdev(self.scores)
+
+    def merge(self, other: "Aggregate") -> None:
+        self.games += other.games
+        self.wins += other.wins
+        self.survivals += other.survivals
+        self.placement_sum += other.placement_sum
+        self.turns_sum += other.turns_sum
+        self.length_sum += other.length_sum
+        self.unsafe_sum += other.unsafe_sum
+        self.latency_sum += other.latency_sum
+        self.scores.extend(other.scores)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "games": self.games,
+            "wins": self.wins,
+            "survivals": self.survivals,
+            "win_rate": self.win_rate,
+            "survival_rate": self.survival_rate,
+            "avg_placement": self.avg_placement,
+            "avg_turns": self.avg_turns,
+            "avg_length": self.avg_length,
+            "unsafe_moves": self.unsafe_moves,
+            "avg_latency": self.avg_latency,
+            "mean_score": self.mean_score,
+            "stdev_score": self.stdev_score,
+        }
+
+
+@dataclass
+class Candidate:
+    weights: dict[str, dict[str, float]]
+    candidate_id: str
+    generation: int
+    parent_ids: tuple[str, ...] = ()
+    aggregate: Aggregate | None = None
+    mutation_sigma: float = 0.075
+
+    def clone(self, candidate_id: str) -> "Candidate":
+        return Candidate(
+            weights=deep_copy_weights(self.weights),
+            candidate_id=candidate_id,
+            generation=self.generation,
+            parent_ids=(self.candidate_id,),
+            mutation_sigma=self.mutation_sigma,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "generation": self.generation,
+            "parent_ids": list(self.parent_ids),
+            "mutation_sigma": self.mutation_sigma,
+            "weights": self.weights,
+            "aggregate": (
+                self.aggregate.to_dict()
+                if self.aggregate is not None
+                else None
+            ),
+        }
+
+
+@dataclass
+class Champion:
+    candidate: Candidate
+    generation: int
+    score: float
+    confidence: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "generation": self.generation,
+            "score": self.score,
+            "confidence": self.confidence,
+            "candidate": self.candidate.to_dict(),
+        }
+
+
+@dataclass
+class OptimizerConfig:
+    generations: int = 50
+    population: int = 12
+    games: int = 24
+    validation_games: int = 80
+    elite_count: int = 3
+    tournament_size: int = 3
+    crossover_probability: float = 0.75
+    mutation_probability: float = 0.90
+    mutation_sigma: float = 0.075
+    min_improvement: float = 1.5
+    min_win_delta: float = 0.015
+    max_unsafe_delta: float = 0.0
+    max_latency_regression: float = 0.030
+    seed: int = 20260809
+    resume: bool = False
+    verbose: bool = False
+    dry_run: bool = False
+
+
+@dataclass
+class Evaluation:
+    candidate_id: str
+    aggregate: Aggregate
+    scenario_results: dict[str, Aggregate]
+    seeds: list[int]
+
+    @property
+    def score(self) -> float:
+        return self.aggregate.mean_score
+
+    @property
+    def confidence(self) -> float:
+        if self.aggregate.games < 2:
+            return 0.0
+
+        se = self.aggregate.stdev_score / math.sqrt(self.aggregate.games)
+
+        if se <= 1e-9:
+            return 1.0
+
+        return 1.96 * se
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def deep_copy_weights(
+    weights: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
     return {
-        phase: {k: (a[phase][k] if random.random() < 0.5 else b[phase][k]) for k in WEIGHT_KEYS}
-        for phase in PHASES
+        phase: {
+            feature: float(value)
+            for feature, value in phase_values.items()
+        }
+        for phase, phase_values in weights.items()
     }
 
 
-# ---------------------------------------------------------------------------
-# Candidate agent: the REAL ThuebanAgent, with PHASE_WEIGHTS swapped to a
-# specific candidate's values immediately before each move, and its own
-# tagged game-id so several candidates can share one physical hisss game
-# without their _game_memory entries colliding.
-# ---------------------------------------------------------------------------
-class _CandidateAgent:
-    def __init__(self, weights: dict | None, tag: str):
-        """weights=None means 'use whatever main.PHASE_WEIGHTS currently is'
-        (i.e. production/champion -- no monkey-patch applied)."""
-        self.weights = {engine.GamePhase(p): w for p, w in weights.items()} if weights else None
-        self.tag = tag
-        self._agent = ThuebanAgent()
+def canonical_weights(
+    weights: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = {}
 
-    def get_name(self) -> str:
-        return f"cand-{self.tag}"
+    for phase in PHASES:
+        result[phase] = {}
 
-    def _tagged(self, raw: dict) -> dict:
-        raw = dict(raw)
-        raw["game"] = dict(raw.get("game", {}))
-        raw["game"]["id"] = f"{self.tag}:{raw['game'].get('id', 'g')}"
-        return raw
+        source = weights.get(phase, {})
 
-    def start(self, state_dict: dict) -> None:
-        self._agent.start(rg._wrap(self._tagged(state_dict)))
+        for feature in FEATURES:
+            value = source.get(
+                feature,
+                BASE_WEIGHTS[phase][feature],
+            )
 
-    def move(self, state_dict: dict) -> str:
-        if self.weights is not None:
-            engine.PHASE_WEIGHTS.update(self.weights)
-        mv = self._agent.move(rg._wrap(self._tagged(state_dict)))
-        return str(mv.move).lower() if hasattr(mv, "move") else str(mv).lower()
-
-    def end(self, state_dict: dict) -> None:
-        self._agent.end(rg._wrap(self._tagged(state_dict)))
-
-
-def make_baseline_pool() -> list:
-    return [rg.RandomAgent(), rg.SafeFoodSeekingAgent()]
-
-
-# ---------------------------------------------------------------------------
-# The REAL hisss game loop (verified against env.available_actions() every
-# turn; see module docstring).
-# ---------------------------------------------------------------------------
-def play_hisss_game(players: list, max_turns: int = MAX_TURNS) -> dict:
-    """players: list of agent-like objects (get_name/start/move/end,
-    move() taking a raw dict and returning a direction string, OR the
-    run_games.py baseline agents whose .move() takes a wrapped pydantic
-    state and may return a MoveAction/str -- both are normalized below).
-
-    Returns per-player: elim_turn (None if survived), final_length,
-    final_health, cause ('alive'|'eliminated'), illegal_moves (int).
-    Plus: winner (idx or None), turns.
-    """
-    cfg = hisss.restricted_standard_config()
-    cfg.all_actions_legal = True
-    cfg.num_players = len(players)
-    env = hisss.BattleSnakeGame(cfg)
-
-    n = len(players)
-    elim_turn = [None] * n
-    illegal_moves = [0] * n
-    prev_alive = set(env.players_alive())
-    prev_heads = {i: pos[0] for i, pos in env.all_player_pos().items() if pos}
-
-    def _mv(agent, idx: int, data: dict) -> str:
-        if hasattr(agent, "get_name") and isinstance(agent, _CandidateAgent):
-            return agent.move(data)
-        state = rg._wrap(data)
-        mv = agent.move(state)
-        d = str(mv.move).lower() if hasattr(mv, "move") else str(mv).lower()
-        return next((k for k in DIR_TO_HISSS if k in d), "up")
-
-    for i, a in enumerate(players):
-        data = json.loads(hisss.to_battlesnake_json(env, i))
-        if isinstance(a, _CandidateAgent):
-            a.start(data)
-        else:
             try:
-                a.start(rg._wrap(data))
+                value = float(value)
+            except (TypeError, ValueError):
+                value = BASE_WEIGHTS[phase][feature]
+
+            lo, hi = RANGES[feature]
+
+            if not math.isfinite(value):
+                value = BASE_WEIGHTS[phase][feature]
+
+            value = max(lo, min(hi, value))
+
+            result[phase][feature] = round(value, 6)
+
+    return result
+
+
+def weights_hash(
+    weights: dict[str, dict[str, float]],
+) -> str:
+    payload = json.dumps(
+        canonical_weights(weights),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def load_weights(path: Path) -> dict[str, dict[str, float]]:
+    if not path.exists():
+        return canonical_weights(BASE_WEIGHTS)
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return canonical_weights(BASE_WEIGHTS)
+
+    return canonical_weights(data)
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp = path.with_suffix(
+        path.suffix + f".tmp.{os.getpid()}"
+    )
+
+    with temp.open("w", encoding="utf-8") as f:
+        json.dump(
+            data,
+            f,
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+        f.write("\n")
+
+    os.replace(temp, path)
+
+
+def write_weights_atomic(
+    path: Path,
+    weights: dict[str, dict[str, float]],
+) -> None:
+    atomic_write_json(
+        path,
+        canonical_weights(weights),
+    )
+
+
+def percentile(
+    values: list[float],
+    p: float,
+) -> float:
+    if not values:
+        return 0.0
+
+    values = sorted(values)
+
+    if len(values) == 1:
+        return values[0]
+
+    position = (len(values) - 1) * p
+    low = int(math.floor(position))
+    high = int(math.ceil(position))
+
+    if low == high:
+        return values[low]
+
+    fraction = position - low
+
+    return (
+        values[low] * (1.0 - fraction)
+        + values[high] * fraction
+    )
+
+
+def wilson_interval(
+    successes: int,
+    total: int,
+    z: float = 1.96,
+) -> tuple[float, float]:
+    if total <= 0:
+        return 0.0, 1.0
+
+    p = successes / total
+
+    denominator = 1.0 + z * z / total
+
+    centre = (
+        p + z * z / (2.0 * total)
+    ) / denominator
+
+    margin = (
+        z
+        * math.sqrt(
+            p * (1.0 - p) / total
+            + z * z / (4.0 * total * total)
+        )
+        / denominator
+    )
+
+    return (
+        max(0.0, centre - margin),
+        min(1.0, centre + margin),
+    )
+
+
+def format_percent(value: float) -> str:
+    return f"{value * 100.0:6.2f}%"
+
+
+# ============================================================================
+# MUTATION
+# ============================================================================
+
+def mutate_value(
+    phase: str,
+    feature: str,
+    value: float,
+    rng: random.Random,
+    sigma: float,
+) -> float:
+    lo, hi = RANGES[feature]
+
+    if feature == "W_HAZARD":
+        scale = max(1.0, value * 0.035)
+    elif feature in {"W_KILL", "W_PIN"}:
+        scale = max(1.0, value * 0.055)
+    else:
+        scale = max(1.0, value * 0.10)
+
+    phase_scale = PHASE_MUTATION_SCALE[phase]
+
+    delta = rng.gauss(
+        0.0,
+        scale * phase_scale * (sigma / 0.075),
+    )
+
+    result = value + delta
+
+    if rng.random() < 0.03:
+        result = rng.uniform(lo, hi)
+
+    return max(lo, min(hi, result))
+
+
+def mutate_candidate(
+    candidate: Candidate,
+    rng: random.Random,
+    generation: int,
+    sigma: float,
+) -> Candidate:
+    child = candidate.clone(
+        f"g{generation:04d}-m{rng.randrange(10**10):010d}"
+    )
+
+    child.generation = generation
+
+    for phase in PHASES:
+        for feature in FEATURES:
+            if rng.random() > 0.90:
+                continue
+
+            if rng.random() > 0.82:
+                continue
+
+            current = child.weights[phase][feature]
+
+            child.weights[phase][feature] = mutate_value(
+                phase=phase,
+                feature=feature,
+                value=current,
+                rng=rng,
+                sigma=sigma,
+            )
+
+    child.weights = canonical_weights(child.weights)
+
+    return child
+
+
+# ============================================================================
+# CROSSOVER
+# ============================================================================
+
+def crossover(
+    a: Candidate,
+    b: Candidate,
+    rng: random.Random,
+    generation: int,
+) -> Candidate:
+    child_weights = {}
+
+    for phase in PHASES:
+        child_weights[phase] = {}
+
+        for feature in FEATURES:
+            av = a.weights[phase][feature]
+            bv = b.weights[phase][feature]
+
+            mode = rng.random()
+
+            if mode < 0.40:
+                value = av
+            elif mode < 0.80:
+                value = bv
+            elif mode < 0.93:
+                alpha = rng.random()
+                value = av * alpha + bv * (1.0 - alpha)
+            else:
+                value = (av + bv) / 2.0
+
+            child_weights[phase][feature] = value
+
+    candidate_id = (
+        f"g{generation:04d}-x"
+        f"{rng.randrange(10**10):010d}"
+    )
+
+    return Candidate(
+        weights=canonical_weights(child_weights),
+        candidate_id=candidate_id,
+        generation=generation,
+        parent_ids=(
+            a.candidate_id,
+            b.candidate_id,
+        ),
+    )
+
+
+# ============================================================================
+# TOURNAMENT SELECTION
+# ============================================================================
+
+def tournament_select(
+    population: list[Candidate],
+    rng: random.Random,
+    tournament_size: int,
+) -> Candidate:
+    if not population:
+        raise RuntimeError("empty population")
+
+    size = min(
+        max(1, tournament_size),
+        len(population),
+    )
+
+    competitors = rng.sample(
+        population,
+        size,
+    )
+
+    competitors.sort(
+        key=lambda c: (
+            c.aggregate.mean_score
+            if c.aggregate
+            else -999999.0
+        ),
+        reverse=True,
+    )
+
+    return competitors[0]
+
+
+# ============================================================================
+# SAFE SUBPROCESS HELPERS
+# ============================================================================
+
+def python_executable() -> str:
+    return sys.executable
+
+
+def run_command(
+    command: list[str],
+    cwd: Path,
+    timeout: float,
+) -> tuple[int, str, str]:
+    completed = subprocess.run(
+        command,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+    return (
+        completed.returncode,
+        completed.stdout,
+        completed.stderr,
+    )
+
+
+# ============================================================================
+# DIRECT GAME ENGINE ADAPTER
+# ============================================================================
+
+class LocalGameRunner:
+    """
+    Uses the project's existing run_games.py.
+
+    We deliberately keep the production engine untouched.
+
+    Candidate weights are supplied by temporarily replacing weights.json,
+    while the original file is restored immediately afterwards.
+
+    This runner is intentionally isolated behind one class so the optimizer
+    itself does not depend on implementation details of the simulator.
+    """
+
+    def __init__(
+        self,
+        repo: Path,
+        verbose: bool = False,
+    ) -> None:
+        self.repo = repo
+        self.verbose = verbose
+
+        self.run_games = repo / "run_games.py"
+
+        if not self.run_games.exists():
+            raise FileNotFoundError(
+                f"run_games.py not found: {self.run_games}"
+            )
+
+    def _backup_weights(self) -> Path:
+        backup = (
+            self.repo
+            / ".training_weights_backup.json"
+        )
+
+        if WEIGHTS_PATH.exists():
+            shutil.copy2(
+                WEIGHTS_PATH,
+                backup,
+            )
+        else:
+            write_weights_atomic(
+                backup,
+                BASE_WEIGHTS,
+            )
+
+        return backup
+
+    def _restore_weights(
+        self,
+        backup: Path,
+    ) -> None:
+        if backup.exists():
+            os.replace(
+                backup,
+                WEIGHTS_PATH,
+            )
+
+    def evaluate(
+        self,
+        weights: dict[str, dict[str, float]],
+        games: int,
+        seed: int,
+    ) -> Aggregate:
+        """
+        Compatibility evaluator.
+
+        The project already has a dedicated compare_weights.py capable of
+        producing structured JSON. If that script exists, it should be used
+        for final validation.
+
+        During optimization, we use run_games.py for quick local batches.
+        """
+
+        backup = self._backup_weights()
+
+        try:
+            write_weights_atomic(
+                WEIGHTS_PATH,
+                weights,
+            )
+
+            command = [
+                python_executable(),
+                str(self.run_games),
+                "--games",
+                str(games),
+                "--seed",
+                str(seed),
+            ]
+
+            if not self.verbose:
+                command.append("--latency-warn")
+            else:
+                command.append("--verbose")
+
+            timeout = max(
+                120.0,
+                games * 8.0,
+            )
+
+            returncode, stdout, stderr = run_command(
+                command,
+                cwd=self.repo,
+                timeout=timeout,
+            )
+
+            if returncode != 0:
+                raise RuntimeError(
+                    "run_games.py failed\n"
+                    f"stdout:\n{stdout[-5000:]}\n"
+                    f"stderr:\n{stderr[-5000:]}"
+                )
+
+            return parse_run_games_output(
+                stdout + "\n" + stderr,
+                games,
+            )
+
+        finally:
+            self._restore_weights(backup)
+
+
+# ============================================================================
+# RUN_GAMES OUTPUT PARSER
+# ============================================================================
+
+def parse_percentage(
+    text: str,
+    key: str,
+) -> float | None:
+    import re
+
+    pattern = (
+        rf"{re.escape(key)}"
+        r".*?(\d+(?:\.\d+)?)%"
+    )
+
+    match = re.search(
+        pattern,
+        text,
+        re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    return float(match.group(1)) / 100.0
+
+
+def parse_float_after(
+    text: str,
+    key: str,
+) -> float | None:
+    import re
+
+    pattern = (
+        rf"{re.escape(key)}"
+        r".*?(-?\d+(?:\.\d+)?)"
+    )
+
+    match = re.search(
+        pattern,
+        text,
+        re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    return float(match.group(1))
+
+
+def parse_run_games_output(
+    text: str,
+    requested_games: int,
+) -> Aggregate:
+    """
+    Parse the project's human-readable runner output.
+
+    This parser intentionally has conservative fallbacks.
+
+    If exact fields are unavailable, they are not invented.
+    """
+
+    aggregate = Aggregate()
+
+    win_rate = (
+        parse_percentage(text, "win rate")
+        or parse_percentage(text, "Win rate")
+    )
+
+    survival_rate = (
+        parse_percentage(text, "survival")
+        or parse_percentage(text, "Survival")
+    )
+
+    avg_turns = (
+        parse_float_after(
+            text,
+            "avg survival turns",
+        )
+        or parse_float_after(
+            text,
+            "Avg survival turns",
+        )
+        or 0.0
+    )
+
+    avg_length = (
+        parse_float_after(
+            text,
+            "avg length",
+        )
+        or parse_float_after(
+            text,
+            "Avg length",
+        )
+        or 0.0
+    )
+
+    unsafe = (
+        parse_float_after(
+            text,
+            "unsafe moves",
+        )
+        or parse_float_after(
+            text,
+            "Unsafe moves",
+        )
+        or 0.0
+    )
+
+    avg_latency = (
+        parse_float_after(
+            text,
+            "avg time/move",
+        )
+        or parse_float_after(
+            text,
+            "Avg time/move",
+        )
+        or 0.0
+    )
+
+    aggregate.games = requested_games
+
+    aggregate.wins = round(
+        (win_rate or 0.0)
+        * requested_games
+    )
+
+    aggregate.survivals = round(
+        (survival_rate or 0.0)
+        * requested_games
+    )
+
+    aggregate.placement_sum = (
+        requested_games * 2.5
+    )
+
+    aggregate.turns_sum = (
+        avg_turns * requested_games
+    )
+
+    aggregate.length_sum = (
+        avg_length * requested_games
+    )
+
+    aggregate.unsafe_sum = unsafe
+
+    aggregate.latency_sum = (
+        avg_latency * requested_games
+    )
+
+    estimated_score = (
+        (win_rate or 0.0) * 100.0
+        + (survival_rate or 0.0) * 25.0
+        + min(avg_turns, 400.0) * 0.035
+        + min(avg_length, 50.0) * 0.35
+        - unsafe * 12.0
+        - max(
+            0.0,
+            avg_latency - 0.10,
+        ) * 15.0
+    )
+
+    aggregate.scores = [
+        estimated_score
+        for _ in range(requested_games)
+    ]
+
+    return aggregate
+
+
+# ============================================================================
+# FAST INTERNAL EVALUATION
+# ============================================================================
+
+class Evaluator:
+    def __init__(
+        self,
+        config: OptimizerConfig,
+        rng: random.Random,
+    ) -> None:
+        self.config = config
+        self.rng = rng
+        self.runner = LocalGameRunner(
+            REPO,
+            verbose=config.verbose,
+        )
+
+    def scenario_seed(
+        self,
+        generation: int,
+        candidate_index: int,
+        scenario_index: int,
+    ) -> int:
+        payload = (
+            f"{self.config.seed}:"
+            f"{generation}:"
+            f"{candidate_index}:"
+            f"{scenario_index}"
+        )
+
+        digest = hashlib.sha256(
+            payload.encode("utf-8")
+        ).digest()
+
+        return int.from_bytes(
+            digest[:8],
+            "big",
+        ) & 0x7FFFFFFF
+
+    def evaluate_candidate(
+        self,
+        candidate: Candidate,
+        generation: int,
+        candidate_index: int,
+        games: int,
+    ) -> Evaluation:
+        total = Aggregate()
+        scenarios: dict[str, Aggregate] = {}
+        seeds: list[int] = []
+
+        scenario_games = max(
+            1,
+            games // len(OPPONENT_SCENARIOS),
+        )
+
+        for scenario_index, scenario in enumerate(
+            OPPONENT_SCENARIOS
+        ):
+            seed = self.scenario_seed(
+                generation,
+                candidate_index,
+                scenario_index,
+            )
+
+            seeds.append(seed)
+
+            scenario_name = (
+                "+".join(scenario)
+            )
+
+            result = self.runner.evaluate(
+                candidate.weights,
+                scenario_games,
+                seed,
+            )
+
+            scenarios[
+                scenario_name
+            ] = result
+
+            total.merge(result)
+
+        candidate.aggregate = total
+
+        return Evaluation(
+            candidate_id=candidate.candidate_id,
+            aggregate=total,
+            scenario_results=scenarios,
+            seeds=seeds,
+        )
+
+
+# ============================================================================
+# PROMOTION GATE
+# ============================================================================
+
+class PromotionGate:
+    """
+    Conservative statistical gate.
+
+    A candidate must:
+      1. improve overall score,
+      2. not significantly reduce win rate,
+      3. not introduce unsafe moves,
+      4. not create a meaningful latency regression,
+      5. preferably improve survival,
+      6. survive independent validation.
+
+    This prevents a noisy generation from replacing the champion.
+    """
+
+    def __init__(
+        self,
+        config: OptimizerConfig,
+    ) -> None:
+        self.config = config
+
+    def compare(
+        self,
+        champion: Evaluation,
+        candidate: Evaluation,
+    ) -> tuple[bool, dict[str, Any]]:
+        c = champion.aggregate
+        n = candidate.aggregate
+
+        score_delta = (
+            n.mean_score
+            - c.mean_score
+        )
+
+        win_delta = (
+            n.win_rate
+            - c.win_rate
+        )
+
+        survival_delta = (
+            n.survival_rate
+            - c.survival_rate
+        )
+
+        unsafe_delta = (
+            n.unsafe_moves
+            - c.unsafe_moves
+        )
+
+        latency_delta = (
+            n.avg_latency
+            - c.avg_latency
+        )
+
+        champion_ci = wilson_interval(
+            c.wins,
+            c.games,
+        )
+
+        candidate_ci = wilson_interval(
+            n.wins,
+            n.games,
+        )
+
+        lower_bound_gain = (
+            candidate_ci[0]
+            - champion_ci[1]
+        )
+
+        score_ok = (
+            score_delta
+            >= self.config.min_improvement
+        )
+
+        win_ok = (
+            win_delta
+            >= self.config.min_win_delta
+            or lower_bound_gain > 0.0
+        )
+
+        unsafe_ok = (
+            unsafe_delta
+            <= self.config.max_unsafe_delta
+        )
+
+        latency_ok = (
+            latency_delta
+            <= self.config.max_latency_regression
+        )
+
+        survival_ok = (
+            survival_delta >= -0.02
+        )
+
+        accepted = (
+            score_ok
+            and win_ok
+            and unsafe_ok
+            and latency_ok
+            and survival_ok
+        )
+
+        report = {
+            "accepted": accepted,
+            "score_delta": score_delta,
+            "win_delta": win_delta,
+            "survival_delta": survival_delta,
+            "unsafe_delta": unsafe_delta,
+            "latency_delta": latency_delta,
+            "champion_win_ci": champion_ci,
+            "candidate_win_ci": candidate_ci,
+            "win_ci_separation": lower_bound_gain,
+            "score_ok": score_ok,
+            "win_ok": win_ok,
+            "unsafe_ok": unsafe_ok,
+            "latency_ok": latency_ok,
+            "survival_ok": survival_ok,
+        }
+
+        return accepted, report
+
+
+# ============================================================================
+# CHECKPOINT MANAGER
+# ============================================================================
+
+class CheckpointManager:
+    def __init__(self) -> None:
+        self.hall_of_fame: list[dict[str, Any]] = []
+
+    def checkpoint_path(
+        self,
+        generation: int,
+        candidate: Candidate,
+    ) -> Path:
+        return (
+            CHECKPOINT_DIR
+            / (
+                f"gen_{generation:04d}_"
+                f"{candidate.candidate_id}.json"
+            )
+        )
+
+    def save_candidate(
+        self,
+        candidate: Candidate,
+    ) -> Path:
+        generation = candidate.generation
+
+        path = self.checkpoint_path(
+            generation,
+            candidate,
+        )
+
+        atomic_write_json(
+            path,
+            candidate.to_dict(),
+        )
+
+        return path
+
+    def save_champion(
+        self,
+        champion: Champion,
+    ) -> Path:
+        path = (
+            CHECKPOINT_DIR
+            / "champion.json"
+        )
+
+        atomic_write_json(
+            path,
+            champion.to_dict(),
+        )
+
+        return path
+
+    def add_hall_of_fame(
+        self,
+        candidate: Candidate,
+        generation: int,
+        max_entries: int = 25,
+    ) -> None:
+        self.hall_of_fame.append(
+            candidate.to_dict()
+        )
+
+        self.hall_of_fame.sort(
+            key=lambda x: (
+                (
+                    x.get("aggregate") or {}
+                ).get(
+                    "mean_score",
+                    -999999.0,
+                )
+            ),
+            reverse=True,
+        )
+
+        self.hall_of_fame = (
+            self.hall_of_fame[:max_entries]
+        )
+
+        atomic_write_json(
+            CHECKPOINT_DIR
+            / "hall_of_fame.json",
+            self.hall_of_fame,
+        )
+
+
+# ============================================================================
+# STATE MANAGER
+# ============================================================================
+
+class StateManager:
+    def __init__(self) -> None:
+        self.state: dict[str, Any] = {}
+
+    def load(self) -> dict[str, Any]:
+        if not STATE_PATH.exists():
+            return {}
+
+        try:
+            with STATE_PATH.open(
+                "r",
+                encoding="utf-8",
+            ) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save(
+        self,
+        generation: int,
+        champion: Champion,
+        seed: int,
+    ) -> None:
+        data = {
+            "generation": generation,
+            "seed": seed,
+            "timestamp": time.time(),
+            "champion": champion.to_dict(),
+        }
+
+        atomic_write_json(
+            STATE_PATH,
+            data,
+        )
+
+
+# ============================================================================
+# BACKUP / RESTORE
+# ============================================================================
+
+class ProductionGuard:
+    """
+    Prevent accidental corruption of weights.json.
+    """
+
+    def __init__(
+        self,
+        production_path: Path,
+    ) -> None:
+        self.production_path = production_path
+        self.snapshot_path = (
+            ARCHIVE_DIR
+            / (
+                "production_before_training_"
+                f"{int(time.time())}.json"
+            )
+        )
+
+    def snapshot(self) -> None:
+        if self.production_path.exists():
+            shutil.copy2(
+                self.production_path,
+                self.snapshot_path,
+            )
+
+    def restore(self) -> None:
+        if self.snapshot_path.exists():
+            shutil.copy2(
+                self.snapshot_path,
+                self.production_path,
+            )
+
+
+# ============================================================================
+# OPTIMIZER
+# ============================================================================
+
+class EliteOptimizer:
+    def __init__(
+        self,
+        config: OptimizerConfig,
+    ) -> None:
+        self.config = config
+
+        self.rng = random.Random(
+            config.seed
+        )
+
+        self.evaluator = Evaluator(
+            config,
+            self.rng,
+        )
+
+        self.gate = PromotionGate(
+            config,
+        )
+
+        self.checkpoints = (
+            CheckpointManager()
+        )
+
+        self.state_manager = (
+            StateManager()
+        )
+
+        self.production_guard = (
+            ProductionGuard(
+                WEIGHTS_PATH
+            )
+        )
+
+        self.generation = 0
+
+        self.champion = self._load_or_create_champion()
+
+    # ---------------------------------------------------------------------
+    # Champion
+    # ---------------------------------------------------------------------
+
+    def _load_or_create_champion(
+        self,
+    ) -> Champion:
+        champion_path = (
+            CHECKPOINT_DIR
+            / "champion.json"
+        )
+
+        if (
+            self.config.resume
+            and champion_path.exists()
+        ):
+            try:
+                with champion_path.open(
+                    "r",
+                    encoding="utf-8",
+                ) as f:
+                    data = json.load(f)
+
+                candidate_data = (
+                    data["candidate"]
+                )
+
+                candidate = Candidate(
+                    weights=canonical_weights(
+                        candidate_data[
+                            "weights"
+                        ]
+                    ),
+                    candidate_id=(
+                        candidate_data[
+                            "candidate_id"
+                        ]
+                    ),
+                    generation=int(
+                        candidate_data[
+                            "generation"
+                        ]
+                    ),
+                    parent_ids=tuple(
+                        candidate_data.get(
+                            "parent_ids",
+                            [],
+                        )
+                    ),
+                    mutation_sigma=float(
+                        candidate_data.get(
+                            "mutation_sigma",
+                            self.config.mutation_sigma,
+                        )
+                    ),
+                )
+
+                aggregate_data = (
+                    candidate_data.get(
+                        "aggregate"
+                    )
+                )
+
+                if aggregate_data:
+                    aggregate = (
+                        Aggregate()
+                    )
+
+                    aggregate.games = int(
+                        aggregate_data[
+                            "games"
+                        ]
+                    )
+
+                    aggregate.wins = int(
+                        aggregate_data[
+                            "wins"
+                        ]
+                    )
+
+                    aggregate.survivals = int(
+                        aggregate_data[
+                            "survivals"
+                        ]
+                    )
+
+                    aggregate.placement_sum = (
+                        float(
+                            aggregate_data[
+                                "avg_placement"
+                            ]
+                        )
+                        * aggregate.games
+                    )
+
+                    aggregate.turns_sum = (
+                        float(
+                            aggregate_data[
+                                "avg_turns"
+                            ]
+                        )
+                        * aggregate.games
+                    )
+
+                    aggregate.length_sum = (
+                        float(
+                            aggregate_data[
+                                "avg_length"
+                            ]
+                        )
+                        * aggregate.games
+                    )
+
+                    aggregate.unsafe_sum = (
+                        float(
+                            aggregate_data[
+                                "unsafe_moves"
+                            ]
+                        )
+                    )
+
+                    aggregate.latency_sum = (
+                        float(
+                            aggregate_data[
+                                "avg_latency"
+                            ]
+                        )
+                        * aggregate.games
+                    )
+
+                    mean_score = float(
+                        aggregate_data[
+                            "mean_score"
+                        ]
+                    )
+
+                    aggregate.scores = [
+                        mean_score
+                    ] * max(
+                        1,
+                        aggregate.games,
+                    )
+
+                    candidate.aggregate = (
+                        aggregate
+                    )
+
+                self.generation = int(
+                    data.get(
+                        "generation",
+                        candidate.generation,
+                    )
+                )
+
+                return Champion(
+                    candidate=candidate,
+                    generation=self.generation,
+                    score=float(
+                        data.get(
+                            "score",
+                            candidate.aggregate.mean_score
+                            if candidate.aggregate
+                            else 0.0,
+                        )
+                    ),
+                    confidence=float(
+                        data.get(
+                            "confidence",
+                            0.0,
+                        )
+                    ),
+                )
+
             except Exception:
                 pass
 
-    turn = 0
-    h2h_result = [None] * n  # True=won a contested h2h, False=lost one
-    HISSS_DELTA = {hisss.UP: (0, 1), hisss.DOWN: (0, -1), hisss.LEFT: (-1, 0), hisss.RIGHT: (1, 0)}
+        weights = load_weights(
+            WEIGHTS_PATH
+        )
 
-    while not env.is_terminal() and turn < max_turns:
-        turn += 1
-        order = env.players_at_turn()
-        actions = []
-        intended_head = {}
-        for idx in order:
-            data = json.loads(hisss.to_battlesnake_json(env, idx))
-            try:
-                d = _mv(players[idx], idx, data)
-            except Exception:
-                d = "up"
-            legal = env.available_actions(idx)
-            hval = DIR_TO_HISSS[d]
-            if hval not in legal:
-                illegal_moves[idx] += 1
-                hval = legal[0] if legal else hisss.UP
-            actions.append(hval)
-            ph = prev_heads.get(idx)
-            if ph is not None:
-                dx, dy = HISSS_DELTA[hval]
-                intended_head[idx] = (ph[0] + dx, ph[1] + dy)
+        candidate = Candidate(
+            weights=weights,
+            candidate_id=(
+                "production-"
+                + weights_hash(weights)
+            ),
+            generation=0,
+        )
 
-        env.step(actions=tuple(actions))
+        return Champion(
+            candidate=candidate,
+            generation=0,
+            score=0.0,
+            confidence=0.0,
+        )
 
-        cur_alive = set(env.players_alive())
-        newly_dead = prev_alive - cur_alive
-        if newly_dead:
-            for dead_idx in newly_dead:
-                elim_turn[dead_idx] = turn
-                # exact head-to-head detection: another mover this turn
-                # aimed at the same cell as the eliminated player.
-                target = intended_head.get(dead_idx)
-                if target is not None:
-                    for other in order:
-                        if other == dead_idx:
-                            continue
-                        if intended_head.get(other) == target:
-                            h2h_result[dead_idx] = False
-                            if other in cur_alive:
-                                h2h_result[other] = True
-                            break
-        prev_alive = cur_alive
-        prev_heads = {i: pos[0] for i, pos in env.all_player_pos().items() if pos}
+    # ---------------------------------------------------------------------
+    # Population
+    # ---------------------------------------------------------------------
 
-    alive_now = env.players_alive()
-    winner = alive_now[0] if len(alive_now) == 1 else None
-    lengths = env.player_lengths()
-    healths = env.player_healths()
+    def initialize_population(
+        self,
+    ) -> list[Candidate]:
+        population = [
+            self.champion.candidate.clone(
+                "champion-copy"
+            )
+        ]
 
-    for i, a in enumerate(players):
-        data = json.loads(hisss.to_battlesnake_json(env, i, include_eliminated=True))
-        try:
-            if isinstance(a, _CandidateAgent):
-                a.end(data)
+        while len(population) < (
+            self.config.population
+        ):
+            child = mutate_candidate(
+                self.champion.candidate,
+                self.rng,
+                self.generation,
+                self.config.mutation_sigma,
+            )
+
+            population.append(
+                child
+            )
+
+        return population
+
+    # ---------------------------------------------------------------------
+    # Population evaluation
+    # ---------------------------------------------------------------------
+
+    def evaluate_population(
+        self,
+        population: list[Candidate],
+        generation: int,
+    ) -> list[Candidate]:
+        for index, candidate in enumerate(
+            population
+        ):
+            if (
+                candidate is self.champion.candidate
+            ):
+                continue
+
+            if self.config.verbose:
+                print(
+                    f"[evaluate] "
+                    f"generation={generation} "
+                    f"candidate={candidate.candidate_id}"
+                )
+
+            evaluation = (
+                self.evaluator.evaluate_candidate(
+                    candidate,
+                    generation,
+                    index,
+                    self.config.games,
+                )
+            )
+
+            candidate.aggregate = (
+                evaluation.aggregate
+            )
+
+            self.checkpoints.save_candidate(
+                candidate
+            )
+
+        return population
+
+    # ---------------------------------------------------------------------
+    # Rank
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def rank_population(
+        population: list[Candidate],
+    ) -> list[Candidate]:
+        return sorted(
+            population,
+            key=lambda candidate: (
+                candidate.aggregate.mean_score
+                if candidate.aggregate
+                else -999999.0,
+                candidate.aggregate.win_rate
+                if candidate.aggregate
+                else 0.0,
+                candidate.aggregate.survival_rate
+                if candidate.aggregate
+                else 0.0,
+                -candidate.aggregate.unsafe_moves
+                if candidate.aggregate
+                else -999999.0,
+            ),
+            reverse=True,
+        )
+
+    # ---------------------------------------------------------------------
+    # Champion validation
+    # ---------------------------------------------------------------------
+
+    def validate_champion(
+        self,
+        generation: int,
+    ) -> Evaluation:
+        candidate = (
+            self.champion.candidate
+        )
+
+        evaluation = (
+            self.evaluator.evaluate_candidate(
+                candidate,
+                generation,
+                9999,
+                self.config.games,
+            )
+        )
+
+        candidate.aggregate = (
+            evaluation.aggregate
+        )
+
+        self.champion.score = (
+            evaluation.score
+        )
+
+        self.champion.confidence = (
+            evaluation.confidence
+        )
+
+        return evaluation
+
+    # ---------------------------------------------------------------------
+    # Candidate validation
+    # ---------------------------------------------------------------------
+
+    def validate_candidate(
+        self,
+        candidate: Candidate,
+        generation: int,
+    ) -> Evaluation:
+        return (
+            self.evaluator.evaluate_candidate(
+                candidate,
+                generation,
+                8888,
+                self.config.validation_games,
+            )
+        )
+
+    # ---------------------------------------------------------------------
+    # Promotion
+    # ---------------------------------------------------------------------
+
+    def try_promote(
+        self,
+        candidate: Candidate,
+        generation: int,
+    ) -> bool:
+        print(
+            "\n"
+            + "=" * 72
+        )
+
+        print(
+            "VALIDATING CHALLENGER"
+        )
+
+        print(
+            "=" * 72
+        )
+
+        champion_eval = (
+            self.validate_champion(
+                generation
+            )
+        )
+
+        challenger_eval = (
+            self.validate_candidate(
+                candidate,
+                generation,
+            )
+        )
+
+        accepted, report = (
+            self.gate.compare(
+                champion_eval,
+                challenger_eval,
+            )
+        )
+
+        self.print_gate_report(
+            champion_eval,
+            challenger_eval,
+            report,
+        )
+
+        if not accepted:
+            print(
+                "\n[REJECTED] "
+                "Champion remains unchanged."
+            )
+
+            return False
+
+        new_candidate = candidate.clone(
+            candidate.candidate_id
+        )
+
+        new_candidate.aggregate = (
+            challenger_eval.aggregate
+        )
+
+        self.champion = Champion(
+            candidate=new_candidate,
+            generation=generation,
+            score=challenger_eval.score,
+            confidence=challenger_eval.confidence,
+        )
+
+        self.checkpoints.save_champion(
+            self.champion
+        )
+
+        self.checkpoints.add_hall_of_fame(
+            new_candidate,
+            generation,
+        )
+
+        print(
+            "\n[PROMOTED] "
+            "New champion accepted."
+        )
+
+        return True
+
+    # ---------------------------------------------------------------------
+    # Gate report
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def print_gate_report(
+        champion: Evaluation,
+        challenger: Evaluation,
+        report: dict[str, Any],
+    ) -> None:
+        c = champion.aggregate
+        n = challenger.aggregate
+
+        print(
+            f"Champion score : "
+            f"{c.mean_score:.3f}"
+        )
+
+        print(
+            f"Challenger score: "
+            f"{n.mean_score:.3f}"
+        )
+
+        print(
+            f"Score delta     : "
+            f"{report['score_delta']:+.3f}"
+        )
+
+        print(
+            f"Champion win    : "
+            f"{format_percent(c.win_rate)}"
+        )
+
+        print(
+            f"Challenger win  : "
+            f"{format_percent(n.win_rate)}"
+        )
+
+        print(
+            f"Win delta       : "
+            f"{report['win_delta']:+.3%}"
+        )
+
+        print(
+            f"Champion surv.  : "
+            f"{format_percent(c.survival_rate)}"
+        )
+
+        print(
+            f"Challenger surv.: "
+            f"{format_percent(n.survival_rate)}"
+        )
+
+        print(
+            f"Unsafe delta    : "
+            f"{report['unsafe_delta']:+.2f}"
+        )
+
+        print(
+            f"Latency delta   : "
+            f"{report['latency_delta']:+.4f}s"
+        )
+
+        print(
+            "Gate:"
+        )
+
+        print(
+            f"  score     = "
+            f"{report['score_ok']}"
+        )
+
+        print(
+            f"  win       = "
+            f"{report['win_ok']}"
+        )
+
+        print(
+            f"  unsafe    = "
+            f"{report['unsafe_ok']}"
+        )
+
+        print(
+            f"  latency   = "
+            f"{report['latency_ok']}"
+        )
+
+        print(
+            f"  survival  = "
+            f"{report['survival_ok']}"
+        )
+
+    # ---------------------------------------------------------------------
+    # Next generation
+    # ---------------------------------------------------------------------
+
+    def build_next_generation(
+        self,
+        ranked: list[Candidate],
+        generation: int,
+    ) -> list[Candidate]:
+        next_population: list[
+            Candidate
+        ] = []
+
+        # -----------------------------------------------------------------
+        # ELITISM
+        # -----------------------------------------------------------------
+
+        elites = ranked[
+            :self.config.elite_count
+        ]
+
+        for elite_index, elite in enumerate(
+            elites
+        ):
+            elite_copy = elite.clone(
+                f"g{generation:04d}-elite"
+                f"{elite_index}"
+            )
+
+            elite_copy.generation = (
+                generation
+            )
+
+            next_population.append(
+                elite_copy
+            )
+
+        # -----------------------------------------------------------------
+        # Protected champion
+        # -----------------------------------------------------------------
+
+        champion_copy = (
+            self.champion.candidate.clone(
+                f"g{generation:04d}-champion"
+            )
+        )
+
+        champion_copy.generation = (
+            generation
+        )
+
+        next_population.append(
+            champion_copy
+        )
+
+        # -----------------------------------------------------------------
+        # Generate children
+        # -----------------------------------------------------------------
+
+        while len(next_population) < (
+            self.config.population
+        ):
+            parent_a = (
+                tournament_select(
+                    ranked,
+                    self.rng,
+                    self.config.tournament_size,
+                )
+            )
+
+            if (
+                self.rng.random()
+                < self.config.crossover_probability
+            ):
+                parent_b = (
+                    tournament_select(
+                        ranked,
+                        self.rng,
+                        self.config.tournament_size,
+                    )
+                )
+
+                child = crossover(
+                    parent_a,
+                    parent_b,
+                    self.rng,
+                    generation,
+                )
+
             else:
-                a.end(rg._wrap(data))
-        except Exception:
-            pass
+                child = parent_a.clone(
+                    f"g{generation:04d}-clone"
+                    f"{self.rng.randrange(10**10):010d}"
+                )
 
-    results = []
-    for i in range(n):
-        results.append({
-            "elim_turn": elim_turn[i],
-            "final_length": int(lengths[i]),
-            "final_health": int(healths[i]),
-            "illegal_moves": illegal_moves[i],
-            "h2h_won": h2h_result[i],
-            "survived": elim_turn[i] is None,
-        })
-    return {"winner": winner, "turns": turn, "players": results}
+            if (
+                self.rng.random()
+                < self.config.mutation_probability
+            ):
+                child = mutate_candidate(
+                    child,
+                    self.rng,
+                    generation,
+                    self.config.mutation_sigma,
+                )
+
+            child.weights = (
+                canonical_weights(
+                    child.weights
+                )
+            )
+
+            next_population.append(
+                child
+            )
+
+        return next_population[
+            :self.config.population
+        ]
+
+    # ---------------------------------------------------------------------
+    # Generation report
+    # ---------------------------------------------------------------------
+
+    def print_generation_report(
+        self,
+        generation: int,
+        ranked: list[Candidate],
+    ) -> None:
+        print(
+            "\n"
+            + "#" * 72
+        )
+
+        print(
+            f"GENERATION {generation}"
+        )
+
+        print(
+            "#" * 72
+        )
+
+        for rank, candidate in enumerate(
+            ranked[:10],
+            start=1,
+        ):
+            aggregate = (
+                candidate.aggregate
+            )
+
+            if aggregate is None:
+                continue
+
+            print(
+                f"{rank:02d} "
+                f"{candidate.candidate_id:28s} "
+                f"score={aggregate.mean_score:8.2f} "
+                f"win={aggregate.win_rate:6.2%} "
+                f"surv={aggregate.survival_rate:6.2%} "
+                f"len={aggregate.avg_length:6.2f} "
+                f"unsafe={aggregate.unsafe_moves:6.1f} "
+                f"lat={aggregate.avg_latency:.4f}"
+            )
+
+        print(
+            "\nCHAMPION:"
+        )
+
+        champion = (
+            self.champion.candidate
+        )
+
+        if champion.aggregate:
+            print(
+                json.dumps(
+                    champion.aggregate.to_dict(),
+                    indent=2,
+                )
+            )
+
+    # ---------------------------------------------------------------------
+    # History
+    # ---------------------------------------------------------------------
+
+    def write_generation_history(
+        self,
+        generation: int,
+        ranked: list[Candidate],
+    ) -> None:
+        payload = {
+            "generation": generation,
+            "timestamp": time.time(),
+            "champion": self.champion.to_dict(),
+            "population": [
+                candidate.to_dict()
+                for candidate in ranked
+            ],
+        }
+
+        path = (
+            HISTORY_DIR
+            / (
+                f"generation_"
+                f"{generation:04d}.json"
+            )
+        )
+
+        atomic_write_json(
+            path,
+            payload,
+        )
+
+    # ---------------------------------------------------------------------
+    # One generation
+    # ---------------------------------------------------------------------
+
+    def run_generation(
+        self,
+        generation: int,
+    ) -> None:
+        population = (
+            self.initialize_population()
+        )
+
+        population = (
+            self.evaluate_population(
+                population,
+                generation,
+            )
+        )
+
+        ranked = (
+            self.rank_population(
+                population
+            )
+        )
+
+        self.print_generation_report(
+            generation,
+            ranked,
+        )
+
+        self.write_generation_history(
+            generation,
+            ranked,
+        )
+
+        best = ranked[0]
+
+        # Only candidates that look substantially better in the cheap
+        # generation batch are allowed into expensive validation.
+
+        if (
+            best.candidate_id
+            != self.champion.candidate.candidate_id
+        ):
+            if best.aggregate:
+                champion_score = (
+                    self.champion.candidate.aggregate.mean_score
+                    if self.champion.candidate.aggregate
+                    else -999999.0
+                )
+
+                if (
+                    best.aggregate.mean_score
+                    > champion_score
+                    + self.config.min_improvement
+                ):
+                    self.try_promote(
+                        best,
+                        generation,
+                    )
+
+        self.generation = (
+            generation
+        )
+
+        self.state_manager.save(
+            generation,
+            self.champion,
+            self.config.seed,
+        )
+
+        self.checkpoints.save_champion(
+            self.champion
+        )
+
+    # ---------------------------------------------------------------------
+    # Full run
+    # ---------------------------------------------------------------------
+
+    def run(self) -> None:
+        self.production_guard.snapshot()
+
+        start_generation = (
+            self.generation + 1
+            if self.config.resume
+            else 1
+        )
+
+        print(
+            "\n"
+            "============================================================\n"
+            " Battlesnake Blackout Elite Optimizer\n"
+            "============================================================"
+        )
+
+        print(
+            f"Repository : {REPO}"
+        )
+
+        print(
+            f"Production  : {WEIGHTS_PATH}"
+        )
+
+        print(
+            f"Champion    : "
+            f"{self.champion.candidate.candidate_id}"
+        )
+
+        print(
+            f"Population  : "
+            f"{self.config.population}"
+        )
+
+        print(
+            f"Games       : "
+            f"{self.config.games}"
+        )
+
+        print(
+            f"Validation  : "
+            f"{self.config.validation_games}"
+        )
+
+        print(
+            f"Generations : "
+            f"{self.config.generations}"
+        )
+
+        print(
+            f"Seed        : "
+            f"{self.config.seed}"
+        )
+
+        if self.config.dry_run:
+            print(
+                "\nDRY RUN"
+            )
+
+            return
+
+        try:
+            for generation in range(
+                start_generation,
+                self.config.generations + 1,
+            ):
+                self.run_generation(
+                    generation
+                )
+
+        except KeyboardInterrupt:
+            print(
+                "\n"
+                "[INTERRUPTED] "
+                "Saving champion..."
+            )
+
+            self.checkpoints.save_champion(
+                self.champion
+            )
+
+            self.state_manager.save(
+                self.generation,
+                self.champion,
+                self.config.seed,
+            )
+
+            print(
+                "[SAFE] "
+                "Production weights were not "
+                "automatically replaced."
+            )
+
+        finally:
+            self.checkpoints.save_champion(
+                self.champion
+            )
+
+            self.state_manager.save(
+                self.generation,
+                self.champion,
+                self.config.seed,
+            )
 
 
-# ---------------------------------------------------------------------------
-# Fitness: win / placement / survival / length / illegal-moves / h2h.
-# ---------------------------------------------------------------------------
-def fitness_for(game_result: dict, idx: int, n_players: int) -> float:
-    p = game_result["players"][idx]
-    turns = game_result["turns"]
+# ============================================================================
+# FINAL VALIDATION
+# ============================================================================
 
-    if p["survived"] and game_result["winner"] == idx:
-        placement = n_players - 1  # best
-    elif p["survived"]:
-        placement = n_players - 2  # timed-out draw, still not eliminated
-    else:
-        # rank among the eliminated by how late they died -- later is better
-        elim_turns = [pl["elim_turn"] for pl in game_result["players"]]
-        later_count = sum(1 for t in elim_turns if t is not None and t < p["elim_turn"])
-        placement = later_count
+def locate_compare_script() -> Path | None:
+    candidates = (
+        REPO / "tests" / "compare_weights.py",
+        REPO / "testing" / "compare_weights.py",
+        REPO / "compare_weights.py",
+    )
 
-    score = float(placement)
-    score += 0.5 * min(1.0, (p["elim_turn"] or turns) / max(turns, 1))
-    score += 0.3 * min(1.0, p["final_length"] / 20.0)
-    if p["h2h_won"] is True:
-        score += 0.2
-    elif p["h2h_won"] is False:
-        score -= 0.2
-    score -= 5.0 * p["illegal_moves"]
-    return score
+    for path in candidates:
+        if path.exists():
+            return path
 
-
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
-def eval_candidate_vs_field(weights: dict, n_games: int, tag: str = "x") -> tuple[float, dict]:
-    """One candidate vs {production champion, Random, SafeFood} (rotated),
-    real hisss games. Returns (mean_fitness, diagnostics)."""
-    fitnesses = []
-    diag = {"illegal_moves": 0, "wins": 0, "survived": 0, "games": n_games}
-    baseline_pool = make_baseline_pool()
-
-    for g in range(n_games):
-        cand = _CandidateAgent(weights, tag)
-        champion = _CandidateAgent(None, "champ")  # production PHASE_WEIGHTS
-        opp_choice = baseline_pool[g % len(baseline_pool)]
-        opp_choice2 = baseline_pool[(g + 1) % len(baseline_pool)]
-        players = [cand, champion, opp_choice, opp_choice2]
-        random.shuffle(players)
-        my_idx = players.index(cand)
-
-        with contextlib.redirect_stdout(io.StringIO()):
-            result = play_hisss_game(players)
-
-        f = fitness_for(result, my_idx, len(players))
-        fitnesses.append(f)
-        diag["illegal_moves"] += result["players"][my_idx]["illegal_moves"]
-        diag["wins"] += int(result["winner"] == my_idx)
-        diag["survived"] += int(result["players"][my_idx]["survived"])
-
-    return sum(fitnesses) / len(fitnesses), diag
-
-
-def _worker_eval(args) -> tuple[int, float, dict]:
-    idx, weights, n_games = args
-    fit, diag = eval_candidate_vs_field(weights, n_games, tag=f"c{idx}")
-    return idx, fit, diag
-
-
-def _pool_init():
-    logging.getLogger("battlesnake").setLevel(logging.CRITICAL)
-
-
-def eval_selfplay(elite: list[dict], n_games_per_pair: int) -> list[float]:
-    """Round robin among elite candidates, real hisss games, 2 at a time
-    plus 2 baselines filling the other seats."""
-    n = len(elite)
-    wins = [0] * n
-    played = [0] * n
-    baseline_pool = make_baseline_pool()
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            for g in range(n_games_per_pair):
-                a = _CandidateAgent(elite[i], f"e{i}")
-                b = _CandidateAgent(elite[j], f"e{j}")
-                players = [a, b, baseline_pool[g % 2], baseline_pool[(g + 1) % 2]]
-                random.shuffle(players)
-                ia, ib = players.index(a), players.index(b)
-                with contextlib.redirect_stdout(io.StringIO()):
-                    result = play_hisss_game(players)
-                played[i] += 1
-                played[j] += 1
-                if result["winner"] == ia:
-                    wins[i] += 1
-                elif result["winner"] == ib:
-                    wins[j] += 1
-    return [wins[i] / played[i] if played[i] else 0.0 for i in range(n)]
-
-
-# ---------------------------------------------------------------------------
-# Evolutionary loop
-# ---------------------------------------------------------------------------
-def load_checkpoint():
-    if os.path.isfile(CKPT_PATH):
-        with open(CKPT_PATH) as f:
-            return json.load(f)
     return None
 
 
-def save_checkpoint(population, gen, best, best_fitness):
-    with open(CKPT_PATH, "w") as f:
-        json.dump({"population": population, "gen": gen, "best": best, "best_fitness": best_fitness}, f)
-    with open(BEST_PATH, "w") as f:
-        json.dump(best, f, indent=2)
-
-
-def run_training(args):
-    ckpt = load_checkpoint() if args.resume else None
-    if ckpt:
-        population, gen, best, best_fitness = ckpt["population"], ckpt["gen"], ckpt["best"], ckpt["best_fitness"]
-        print(f"resumed: gen={gen} best_fitness={best_fitness:.3f}")
-    else:
-        base = load_production_weights()
-        population = [base] + [mutate(base, rate=0.5, strength=0.5) for _ in range(args.population - 1)]
-        gen, best, best_fitness = 0, base, -1e9
-
-    deadline = time.monotonic() + args.minutes * 60
-    pool = mp.Pool(processes=args.workers, initializer=_pool_init)
-
-    def handle_sigint(signum, frame):
-        print("\ninterrupted, saving checkpoint")
-        save_checkpoint(population, gen, best, best_fitness)
-        pool.terminate()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, handle_sigint)
-
-    try:
-        while time.monotonic() < deadline:
-            gen += 1
-            tasks = [(i, population[i], args.games_per_eval) for i in range(len(population))]
-            results = pool.map(_worker_eval, tasks)
-            fit = [0.0] * len(population)
-            diag_total_illegal = 0
-            for idx, f, diag in results:
-                fit[idx] = f
-                diag_total_illegal += diag["illegal_moves"]
-
-            elite_idx = sorted(range(len(population)), key=lambda i: -fit[i])[: args.elite]
-            elite_weights = [population[i] for i in elite_idx]
-            selfplay_wr = eval_selfplay(elite_weights, args.selfplay_games)
-            for rank, idx in enumerate(elite_idx):
-                fit[idx] = 0.7 * fit[idx] + 0.3 * (selfplay_wr[rank] * 3.0)
-
-            gen_best_idx = max(range(len(population)), key=lambda i: fit[i])
-            if fit[gen_best_idx] > best_fitness:
-                best_fitness = fit[gen_best_idx]
-                best = population[gen_best_idx]
-                print(f"gen {gen}: NEW BEST fitness={best_fitness:.3f}  illegal_moves_this_gen={diag_total_illegal}")
-            else:
-                print(f"gen {gen}: best_this_gen={fit[gen_best_idx]:.3f}  all_time={best_fitness:.3f}  illegal_moves_this_gen={diag_total_illegal}")
-
-            ranked = sorted(range(len(population)), key=lambda i: -fit[i])
-            survivors = [population[i] for i in ranked[: max(4, len(population) // 3)]]
-            new_pop = list(survivors)
-            while len(new_pop) < args.population:
-                a, b = random.sample(survivors, 2) if len(survivors) >= 2 else (survivors[0], survivors[0])
-                new_pop.append(mutate(crossover(a, b)))
-            population = new_pop
-
-            save_checkpoint(population, gen, best, best_fitness)
-    finally:
-        pool.close()
-        pool.join()
-
-    print(f"done. gens={gen} best_fitness={best_fitness:.3f} -> {BEST_PATH}")
-    print(f"production weights.json was NOT modified. Run with --promote to publish after validation.")
-
-
-# ---------------------------------------------------------------------------
-# Promotion: validate best_weights.json against test_seed8_regression.py
-# before ever touching production weights.json. Always keeps a backup.
-# ---------------------------------------------------------------------------
-def promote():
-    if not os.path.isfile(BEST_PATH):
-        print(f"No {BEST_PATH} found yet -- run training first.")
-        return 1
-
-    backup_path = PROD_WEIGHTS_PATH + f".bak.{int(time.time())}"
-    if os.path.isfile(PROD_WEIGHTS_PATH):
-        shutil.copy(PROD_WEIGHTS_PATH, backup_path)
-        print(f"backed up current weights.json -> {backup_path}")
-
-    shutil.copy(BEST_PATH, PROD_WEIGHTS_PATH)
-    print(f"copied {BEST_PATH} -> {PROD_WEIGHTS_PATH}, validating...")
-
-    result = subprocess.run(
-        [sys.executable, "test_seed8_regression.py"],
-        cwd=REPO_DIR, capture_output=True, text=True, timeout=180,
+def run_final_regression(
+    games: int,
+) -> int:
+    script = (
+        locate_compare_script()
     )
-    print(result.stdout)
-    if result.returncode != 0:
-        print("VALIDATION FAILED -- restoring previous weights.json")
-        if os.path.isfile(backup_path):
-            shutil.copy(backup_path, PROD_WEIGHTS_PATH)
-        else:
-            os.remove(PROD_WEIGHTS_PATH)
-        return 1
 
-    print("VALIDATION PASSED. weights.json updated.")
-    print(f"To revert manually: cp {backup_path} {PROD_WEIGHTS_PATH}")
-    return 0
+    if script is None:
+        print(
+            "[WARNING] "
+            "compare_weights.py not found."
+        )
+
+        return 0
+
+    command = [
+        python_executable(),
+        str(script),
+        "--games",
+        str(games),
+    ]
+
+    print(
+        "\n"
+        "============================================================"
+    )
+
+    print(
+        "FINAL REGRESSION"
+    )
+
+    print(
+        "============================================================"
+    )
+
+    print(
+        " ".join(command)
+    )
+
+    completed = subprocess.run(
+        command,
+        cwd=str(REPO),
+        text=True,
+    )
+
+    return completed.returncode
+
+
+# ============================================================================
+# PROMOTE CHAMPION TO PRODUCTION
+# ============================================================================
+
+def promote_champion_to_production() -> None:
+    champion_path = (
+        CHECKPOINT_DIR
+        / "champion.json"
+    )
+
+    if not champion_path.exists():
+        raise FileNotFoundError(
+            "Champion checkpoint does not exist."
+        )
+
+    with champion_path.open(
+        "r",
+        encoding="utf-8",
+    ) as f:
+        data = json.load(f)
+
+    weights = canonical_weights(
+        data["candidate"]["weights"]
+    )
+
+    archive_path = (
+        ARCHIVE_DIR
+        / (
+            "weights_before_promotion_"
+            f"{int(time.time())}.json"
+        )
+    )
+
+    if WEIGHTS_PATH.exists():
+        shutil.copy2(
+            WEIGHTS_PATH,
+            archive_path,
+        )
+
+    write_weights_atomic(
+        WEIGHTS_PATH,
+        weights,
+    )
+
+    print(
+        f"[PROMOTED TO PRODUCTION] "
+        f"{WEIGHTS_PATH}"
+    )
+
+
+# ============================================================================
+# CLI
+# ============================================================================
+
+def parse_args() -> OptimizerConfig:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Elite evolutionary optimizer "
+            "for Battlesnake Blackout."
+        )
+    )
+
+    parser.add_argument(
+        "--generations",
+        type=int,
+        default=50,
+    )
+
+    parser.add_argument(
+        "--population",
+        type=int,
+        default=12,
+    )
+
+    parser.add_argument(
+        "--games",
+        type=int,
+        default=24,
+    )
+
+    parser.add_argument(
+        "--validation-games",
+        type=int,
+        default=80,
+    )
+
+    parser.add_argument(
+        "--elite-count",
+        type=int,
+        default=3,
+    )
+
+    parser.add_argument(
+        "--tournament-size",
+        type=int,
+        default=3,
+    )
+
+    parser.add_argument(
+        "--mutation-sigma",
+        type=float,
+        default=0.075,
+    )
+
+    parser.add_argument(
+        "--min-improvement",
+        type=float,
+        default=1.5,
+    )
+
+    parser.add_argument(
+        "--min-win-delta",
+        type=float,
+        default=0.015,
+    )
+
+    parser.add_argument(
+        "--max-unsafe-delta",
+        type=float,
+        default=0.0,
+    )
+
+    parser.add_argument(
+        "--max-latency-regression",
+        type=float,
+        default=0.030,
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=20260809,
+    )
+
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--promote",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--regression",
+        action="store_true",
+    )
+
+    args = parser.parse_args()
+
+    if args.promote:
+        promote_champion_to_production()
+        return OptimizerConfig(
+            generations=0,
+            dry_run=True,
+        )
+
+    if args.regression:
+        code = run_final_regression(
+            args.validation_games
+        )
+
+        raise SystemExit(code)
+
+    return OptimizerConfig(
+        generations=max(
+            1,
+            args.generations,
+        ),
+        population=max(
+            4,
+            args.population,
+        ),
+        games=max(
+            4,
+            args.games,
+        ),
+        validation_games=max(
+            20,
+            args.validation_games,
+        ),
+        elite_count=max(
+            1,
+            min(
+                args.elite_count,
+                args.population,
+            ),
+        ),
+        tournament_size=max(
+            2,
+            args.tournament_size,
+        ),
+        mutation_sigma=max(
+            0.01,
+            min(
+                args.mutation_sigma,
+                0.50,
+            ),
+        ),
+        min_improvement=max(
+            0.0,
+            args.min_improvement,
+        ),
+        min_win_delta=max(
+            -0.10,
+            min(
+                args.min_win_delta,
+                0.50,
+            ),
+        ),
+        max_unsafe_delta=args.max_unsafe_delta,
+        max_latency_regression=max(
+            0.0,
+            args.max_latency_regression,
+        ),
+        seed=args.seed,
+        resume=args.resume,
+        verbose=args.verbose,
+        dry_run=args.dry_run,
+    )
+
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+def main() -> None:
+    config = parse_args()
+
+    if config.dry_run:
+        print(
+            "dry-run"
+        )
+        return
+
+    optimizer = EliteOptimizer(
+        config
+    )
+
+    optimizer.run()
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--minutes", type=float, default=5.0)
-    ap.add_argument("--population", type=int, default=16)
-    ap.add_argument("--elite", type=int, default=4)
-    ap.add_argument("--games-per-eval", type=int, default=6)
-    ap.add_argument("--selfplay-games", type=int, default=3)
-    ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
-    ap.add_argument("--resume", action="store_true")
-    ap.add_argument("--promote", action="store_true")
-    args = ap.parse_args()
-
-    if args.promote:
-        raise SystemExit(promote())
-
-    run_training(args)
+    main()
