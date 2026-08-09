@@ -903,7 +903,7 @@ class LocalGameRunner:
             ]
 
             if not self.verbose:
-                command.append("--latency-warn")
+               command.extend(["--latency-warn", "0"])
             else:
                 command.append("--verbose")
 
