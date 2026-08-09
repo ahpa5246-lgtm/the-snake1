@@ -743,11 +743,11 @@ def main() -> None:
                 done = False
                 turns_played = 0
                 deaths = []
-                prev_alive = set(env.alive_indices())
+                prev_alive = set(env.players_alive())
                 while not done:
                     turns_played += 1
                     hisss_actions = []
-                    alive_indices = env.alive_indices()
+                    alive_indices = env.players_alive()
                     for idx in range(len(agents)):
                         if idx in alive_indices:
                             cur_str   = hisss.to_battlesnake_json(env, idx)
@@ -759,10 +759,8 @@ def main() -> None:
                                 if k in ds:
                                     ds = k; break
                             hisss_actions.append(DIRECTION_TO_HISSS[ds])
-                        else:
-                            hisss_actions.append(hisss.UP)
                     _, done, _ = env.step(actions=tuple(hisss_actions))
-                    current_alive = set(env.alive_indices())
+                    current_alive = set(env.players_alive())
                     for idx in prev_alive - current_alive:
                         deaths.append({
                             "game_id": game_id,
@@ -773,7 +771,7 @@ def main() -> None:
                         })
                     prev_alive = current_alive
 
-                alive = env.alive_indices()
+                alive = env.players_alive()
                 winner_idx = alive[0] if len(alive) == 1 else None
 
                 for idx, agent in enumerate(agents):
