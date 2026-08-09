@@ -1,6 +1,5 @@
 import os
 import sys
-import pytest
 
 # Add the parent directory to the sys path so we can import main
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -110,7 +109,6 @@ def test_is_certain_death_h2h_loss():
 
 
 def test_flood_fill_space():
-    ctx = create_mock_context()
     # 3x3 box around (5,5) but entirely enclosed by occupied cells
     # (4,4) to (6,6)
     occ = set()

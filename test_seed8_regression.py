@@ -107,7 +107,7 @@ def test_no_self_inflicted_death_before_turn_30_multiseed():
 def test_latency_budget():
     from agent_adapter import move_latency_ms
     from main import TacticalEngine
-    results = _run_seed(seed=42, games=2)
+    _run_seed(seed=42, games=2)
     budget = TacticalEngine.COMPUTE_BUDGET_S * 1000
     over_budget = [ms for ms in move_latency_ms if ms > budget]
     assert not over_budget, f"Moves exceeded {budget}ms budget: {over_budget}"

@@ -681,6 +681,7 @@ def setup():
     USE_HISSS = False
     if not args.no_hisss:
         try:
+            global hisss
             import hisss
             USE_HISSS = True
             print("[runner] hisss found — using C++ simulator")
@@ -722,6 +723,7 @@ def main() -> None:
             # Mode A: hisss
             # ----------------------------------------------------------------
             try:
+                import hisss
                 DIRECTION_TO_HISSS = {
                     "up":    hisss.UP,
                     "down":  hisss.DOWN,
@@ -865,11 +867,11 @@ def main() -> None:
         print(f"  Moves > {latency_warn} ms    : {over_thr} / {len(lats)}")
 
     if args.hazards:
-        print(f"\n  --- Hazard stats ---")
+        print("\n  --- Hazard stats ---")
         print(f"  Hazard-zone deaths (any agent)  : {total_haz_deaths}")
         print(f"  Total hazard damage dealt       : {total_haz_dmg} hp")
 
-    print(f"\n  --- Death Causes (All Agents) ---")
+    print("\n  --- Death Causes (All Agents) ---")
     causes = defaultdict(int)
     for r in results:
         for d in r.get("deaths", []):
