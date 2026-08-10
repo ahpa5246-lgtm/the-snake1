@@ -526,7 +526,8 @@ class TacticalEngine:
     @classmethod
     def _is_corridor_trap(cls, cand: tuple[int, int], ctx: GameContext) -> bool:
         """Tier B — is the immediate pocket already too small right now?"""
-        required = ctx.our_len + CORRIDOR_MARGIN
+        eating = 1 if cand in ctx.merged_food else 0
+        required = ctx.our_len + eating + CORRIDOR_MARGIN
         space = cls._flood_fill(cand, ctx.occupied, limit=required, deadline=ctx.deadline)
         return space < required
 
@@ -537,9 +538,10 @@ class TacticalEngine:
         require the flood-fill space from `cand` to stay >= our_len +
         ESCAPE_MARGIN at every step. Prevents entering corridors that look
         wide now but pinch shut a few turns later."""
+        eating = 1 if cand in ctx.merged_food else 0
         for n in range(1, depth + 1):
             if time.monotonic() > ctx.deadline - 0.01:
-                return False  # Bug 2 fix: assume danger on timeout, never "assume safe".
+                return False  # assume danger on timeout
 
             sim_occupied: set = set()
             for x in range(ctx.width):
@@ -550,20 +552,27 @@ class TacticalEngine:
                 sim_occupied.add((ctx.width, y))
 
             body_len = len(ctx.our_body)
-            keep_len = max(1, body_len - n)
+            # If we eat, our tail doesn't vacate on turn 1. It vacates on turn 2.
+            # Thus, the number of vacated segments is max(0, n - eating)
+            keep_len = body_len - max(0, n - eating)
+            
             for i in range(keep_len):
-                if ctx.our_body[i]:
+                if i < body_len and ctx.our_body[i]:
                     sim_occupied.add(ctx.our_body[i])
+                elif i == body_len:
+                    # The tail stays in place for an extra turn
+                    if ctx.our_body[-1]:
+                        sim_occupied.add(ctx.our_body[-1])
 
             for e in ctx.enemy_data:
                 e_body = e["body"]
                 e_blen = len(e_body)
                 e_keep = max(1, e_blen - n)
                 for i in range(e_keep):
-                    if e_body[i]:
+                    if i < e_blen and e_body[i]:
                         sim_occupied.add(e_body[i])
 
-            required = ctx.our_len + ESCAPE_MARGIN
+            required = ctx.our_len + eating + ESCAPE_MARGIN
             space = cls._flood_fill(cand, sim_occupied, limit=required, deadline=ctx.deadline)
             if space < required:
                 return False

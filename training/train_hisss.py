@@ -272,6 +272,7 @@ def play_hisss_game(players: list, max_turns: int = MAX_TURNS) -> dict:
 
     results = []
     for i in range(n):
+        is_starved = (elim_turn[i] is not None) and (healths[i] == 0)
         results.append({
             "elim_turn": elim_turn[i],
             "final_length": int(lengths[i]),
@@ -279,6 +280,7 @@ def play_hisss_game(players: list, max_turns: int = MAX_TURNS) -> dict:
             "illegal_moves": illegal_moves[i],
             "h2h_won": h2h_result[i],
             "survived": elim_turn[i] is None,
+            "starved": is_starved,
         })
     return {"winner": winner, "turns": turn, "players": results}
 
@@ -308,6 +310,11 @@ def fitness_for(game_result: dict, idx: int, n_players: int) -> float:
     elif p["h2h_won"] is False:
         score -= 0.2
     score -= 5.0 * p["illegal_moves"]
+
+    # Massive penalty for dying by running into a wall or body (avoidable collisions)
+    if not p["survived"] and not p["starved"] and (p["h2h_won"] is not False):
+        score -= 10.0
+
     return score
 
 
