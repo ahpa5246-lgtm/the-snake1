@@ -785,15 +785,18 @@ class TacticalEngine:
             return ctx.weights["W_PIN"]
         return 0.0
 
-    @classmethod
+   @classmethod
     def _executioner_score(cls, cand: tuple[int, int], ctx: GameContext) -> float:
         """[D] 1v1 Executioner Mode — block a starving, shorter enemy's path
         to food."""
         e = ctx.enemy_data[0]
-        if (e["length"] >= ctx.our_len) or (e["health"] >= 55):
-            return 0.0
-        eh = e["head_pos"]
-        if not eh:
+        
+        # استخراج الصحة بأمان لتجنب خطأ None
+        enemy_health = e.get("health")
+        if enemy_health is None:
+            enemy_health = 0
+            
+        if (e["length"] >= ctx.our_len) or (enemy_health >= 55):
             return 0.0
 
         food_dist_for_enemy = cls._bfs_dist(eh, ctx.merged_food, ctx.occupied, limit=20)
