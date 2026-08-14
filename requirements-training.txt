@@ -1,0 +1,6 @@
+# Training-only dependencies. Keep these separate from requirements.txt so the
+# Battlesnake HTTP service remains lightweight and has a deterministic fallback.
+# Install the CUDA wheel recommended by PyTorch for the actual training machine.
+torch>=2.3.0
+numpy>=1.26.0
+hisss>=0.1.0

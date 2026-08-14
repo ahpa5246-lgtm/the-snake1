@@ -2758,6 +2758,17 @@ def parse_args() -> OptimizerConfig:
 # ============================================================================
 
 def main() -> None:
+    # Compatibility route: the legacy optimizer is intentionally retained for
+    # heuristic ablation, while --neural delegates to the PPO/PFSP trainer.
+    # Remove only the dispatcher flag so neural_selfplay keeps its own focused
+    # CLI and no ambiguous legacy options leak into the new pipeline.
+    if "--neural" in sys.argv:
+        sys.argv.remove("--neural")
+        from neural_selfplay import parse_args as parse_neural_args
+        from neural_selfplay import train as train_neural
+        train_neural(parse_neural_args())
+        return
+
     config = parse_args()
 
     if config.dry_run:
