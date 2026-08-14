@@ -1,0 +1,152 @@
+name: "⏱️ TIMING TRIAL — DELETE AFTER USE"
+
+# TEMPORARY DIAGNOSTIC WORKFLOW
+# Purpose: Measure real wall-clock time for neural_selfplay.py and train_hisss.py
+# on GitHub Actions ubuntu-latest (2-core, 7GB RAM) to size the daily training budget.
+#
+# Usage:
+#   1. Commit and push this file
+#   2. Go to Actions tab → "⏱️ TIMING TRIAL — DELETE AFTER USE" → Run workflow
+#   3. Wait for completion and review timing summary
+#   4. DELETE this file before creating the real daily-train.yml
+#
+# DO NOT SCHEDULE — manual trigger only.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  timing-trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6-hour safety limit
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (CPU-only PyTorch)
+        run: |
+          echo "::group::Install training dependencies"
+          python -m pip install --upgrade pip
+          # Install CPU-only PyTorch wheel explicitly to avoid CUDA bloat
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy hisss
+          echo "::endgroup::"
+
+          echo "::group::Verify installation"
+          python -c "import torch; print(f'PyTorch {torch.__version__} (CUDA available: {torch.cuda.is_available()})')"
+          python -c "import numpy; print(f'NumPy {numpy.__version__}')"
+          python -c "import hisss; print(f'hisss installed')"
+          echo "::endgroup::"
+
+      - name: "⏱️ TRIAL 1: neural_selfplay.py --updates 5 --games-per-update 16"
+        run: |
+          echo "=========================================="
+          echo "TRIAL 1: Neural PPO Self-Play"
+          echo "Command: python training/neural_selfplay.py --updates 5 --games-per-update 16 --workers 2"
+          echo "Expected: ~5 updates × 16 games = 80 games total"
+          echo "=========================================="
+          echo ""
+
+          START_TIME=$(date +%s)
+
+          python training/neural_selfplay.py \
+            --updates 5 \
+            --games-per-update 16 \
+            --workers 2 \
+            --device cpu \
+            2>&1 | tee neural_trial.log
+
+          EXIT_CODE=${PIPESTATUS[0]}
+          END_TIME=$(date +%s)
+          ELAPSED=$((END_TIME - START_TIME))
+          MINUTES=$((ELAPSED / 60))
+          SECONDS=$((ELAPSED % 60))
+
+          echo ""
+          echo "=========================================="
+          echo "TRIAL 1 RESULT:"
+          echo "Exit code: $EXIT_CODE"
+          echo "Wall-clock time: ${MINUTES}m ${SECONDS}s (${ELAPSED} seconds total)"
+          echo "=========================================="
+
+          # Add to job summary for easy reading
+          echo "### 📊 Trial 1: Neural Self-Play" >> $GITHUB_STEP_SUMMARY
+          echo "- **Command**: \`neural_selfplay.py --updates 5 --games-per-update 16 --workers 2\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Exit code**: $EXIT_CODE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Wall-clock time**: ${MINUTES}m ${SECONDS}s" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::error::Neural self-play trial failed with exit code $EXIT_CODE"
+            echo "See neural_trial.log artifact for details"
+          fi
+
+      - name: "⏱️ TRIAL 2: train_hisss.py --minutes 5"
+        run: |
+          echo "=========================================="
+          echo "TRIAL 2: Tactical Weights Training (hisss)"
+          echo "Command: python training/train_hisss.py --minutes 5 --workers 2"
+          echo "Expected: Evolutionary training for 5 minutes"
+          echo "=========================================="
+          echo ""
+
+          START_TIME=$(date +%s)
+
+          python training/train_hisss.py \
+            --minutes 5 \
+            --workers 2 \
+            2>&1 | tee hisss_trial.log
+
+          EXIT_CODE=${PIPESTATUS[0]}
+          END_TIME=$(date +%s)
+          ELAPSED=$((END_TIME - START_TIME))
+          MINUTES=$((ELAPSED / 60))
+          SECONDS=$((ELAPSED % 60))
+
+          echo ""
+          echo "=========================================="
+          echo "TRIAL 2 RESULT:"
+          echo "Exit code: $EXIT_CODE"
+          echo "Wall-clock time: ${MINUTES}m ${SECONDS}s (${ELAPSED} seconds total)"
+          echo "=========================================="
+
+          # Add to job summary
+          echo "### 📊 Trial 2: Tactical Weights (hisss)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Command**: \`train_hisss.py --minutes 5 --workers 2\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Exit code**: $EXIT_CODE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Wall-clock time**: ${MINUTES}m ${SECONDS}s" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::error::Tactical training trial failed with exit code $EXIT_CODE"
+            echo "See hisss_trial.log artifact for details"
+          fi
+
+      - name: Upload trial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timing-trial-logs
+          path: |
+            neural_trial.log
+            hisss_trial.log
+          retention-days: 7
+
+      - name: "📋 Summary"
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review the wall-clock times above" >> $GITHUB_STEP_SUMMARY
+          echo "2. Use these numbers to size the daily training budget (target: <5 hours)" >> $GITHUB_STEP_SUMMARY
+          echo "3. **DELETE this workflow file** before creating the real \`daily-train.yml\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Runner specs: ubuntu-latest (2-core, 7GB RAM)" >> $GITHUB_STEP_SUMMARY
