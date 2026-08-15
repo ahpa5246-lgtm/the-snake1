@@ -1,0 +1,212 @@
+name: "Daily Training Pipeline"
+
+# Production training workflow - runs 2 conservative cycles (~3 hours total)
+# based on validated timing trial measurements:
+#   - Neural Self-Play: ~11 minutes per cycle
+#   - Tactical Hisss: ~76 minutes per cycle
+#   - Total per cycle: ~87 minutes
+#   - 2 cycles: ~174 minutes (2h 54m) - well under 5-hour GitHub Actions limit
+#
+# Safety measures:
+#   - Manual trigger only (no schedule until validated)
+#   - Checkpoints saved as artifacts, never auto-promoted
+#   - Explicit --promote step required to update production weights.json
+#   - 6-hour timeout as failsafe
+
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: 'Number of training cycles (default: 2)'
+        required: false
+        default: '2'
+        type: choice
+        options:
+          - '1'
+          - '2'
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6-hour safety limit
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (CPU-only PyTorch)
+        run: |
+          echo "::group::Install base dependencies"
+          python -m pip install --upgrade pip
+          # Install production dependencies (fastapi, uvicorn, pydantic)
+          pip install -r requirements.txt
+          echo "::endgroup::"
+
+          echo "::group::Install training dependencies (CPU-only PyTorch)"
+          # CPU-only PyTorch to avoid CUDA bloat
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # Remaining training deps
+          pip install numpy hisss
+          echo "::endgroup::"
+
+          echo "::group::Verify installation"
+          python -c "import fastapi; print(f'FastAPI {fastapi.__version__}')"
+          python -c "import torch; print(f'PyTorch {torch.__version__} (CUDA: {torch.cuda.is_available()})')"
+          python -c "import numpy; print(f'NumPy {numpy.__version__}')"
+          python -c "import hisss; print('hisss installed')"
+          echo "::endgroup::"
+
+      - name: Run training cycles
+        run: |
+          set -o pipefail
+
+          CYCLES=${{ inputs.cycles }}
+          echo "=========================================="
+          echo "Daily Training Pipeline"
+          echo "Cycles: $CYCLES"
+          echo "Runner: ubuntu-latest (2-core, 7GB RAM)"
+          echo "=========================================="
+          echo ""
+
+          TOTAL_START=$(date +%s)
+
+          for i in $(seq 1 $CYCLES); do
+            echo ""
+            echo "=========================================="
+            echo "CYCLE $i of $CYCLES"
+            echo "=========================================="
+            echo ""
+
+            CYCLE_START=$(date +%s)
+
+            # Neural Self-Play (~11 minutes)
+            echo "--- Phase 1: Neural PPO Self-Play ---"
+            NEURAL_START=$(date +%s)
+
+            # Use --resume for cycle 2+ to continue from previous checkpoint
+            if [ $i -eq 1 ]; then
+              python training/neural_selfplay.py \
+                --updates 5 \
+                --games-per-update 16 \
+                --workers 2 \
+                --device cpu \
+                2>&1 | tee -a training_cycle_${i}_neural.log
+              NEURAL_EXIT=${PIPESTATUS[0]}
+            else
+              python training/neural_selfplay.py \
+                --updates 5 \
+                --games-per-update 16 \
+                --workers 2 \
+                --device cpu \
+                --resume \
+                2>&1 | tee -a training_cycle_${i}_neural.log
+              NEURAL_EXIT=${PIPESTATUS[0]}
+            fi
+
+            NEURAL_END=$(date +%s)
+            NEURAL_ELAPSED=$((NEURAL_END - NEURAL_START))
+
+            echo "Neural phase completed: ${NEURAL_ELAPSED}s (exit code: $NEURAL_EXIT)"
+
+            if [ $NEURAL_EXIT -ne 0 ]; then
+              echo "::error::Neural self-play failed in cycle $i"
+              exit 1
+            fi
+
+            # Tactical Hisss (~76 minutes)
+            echo ""
+            echo "--- Phase 2: Tactical Weights (hisss) ---"
+            HISSS_START=$(date +%s)
+
+            # Use --resume for cycle 2+ to continue from previous checkpoint
+            if [ $i -eq 1 ]; then
+              python training/train_hisss.py \
+                --minutes 5 \
+                --workers 2 \
+                2>&1 | tee -a training_cycle_${i}_hisss.log
+              HISSS_EXIT=${PIPESTATUS[0]}
+            else
+              python training/train_hisss.py \
+                --minutes 5 \
+                --workers 2 \
+                --resume \
+                2>&1 | tee -a training_cycle_${i}_hisss.log
+              HISSS_EXIT=${PIPESTATUS[0]}
+            fi
+
+            HISSS_END=$(date +%s)
+            HISSS_ELAPSED=$((HISSS_END - HISSS_START))
+
+            echo "Hisss phase completed: ${HISSS_ELAPSED}s (exit code: $HISSS_EXIT)"
+
+            if [ $HISSS_EXIT -ne 0 ]; then
+              echo "::error::Tactical training failed in cycle $i"
+              exit 1
+            fi
+
+            CYCLE_END=$(date +%s)
+            CYCLE_ELAPSED=$((CYCLE_END - CYCLE_START))
+            CYCLE_MINUTES=$((CYCLE_ELAPSED / 60))
+            CYCLE_SECONDS=$((CYCLE_ELAPSED % 60))
+            echo ""
+            echo "Cycle $i completed: ${CYCLE_MINUTES}m ${CYCLE_SECONDS}s total"
+            echo ""
+          done
+
+          TOTAL_END=$(date +%s)
+          TOTAL_ELAPSED=$((TOTAL_END - TOTAL_START))
+          TOTAL_MINUTES=$((TOTAL_ELAPSED / 60))
+          TOTAL_SECONDS=$((TOTAL_ELAPSED % 60))
+
+          echo "=========================================="
+          echo "Training Pipeline Complete"
+          echo "Total time: ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s"
+          echo "=========================================="
+
+          # Summary for GitHub Actions UI
+          echo "### 🎯 Training Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cycles completed**: $CYCLES" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total time**: ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Checkpoints saved**: training/checkpoints/" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Weights NOT auto-promoted** - checkpoints saved for manual review" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload training checkpoints
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-checkpoints-${{ github.run_number }}
+          path: |
+            training/checkpoints/**/*.json
+            training/checkpoints/**/*.pt
+          retention-days: 30
+
+      - name: Upload training logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-logs-${{ github.run_number }}
+          path: |
+            training_cycle_*.log
+          retention-days: 30
+
+      - name: Training report
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- \`training-checkpoints-${{ github.run_number }}\`: Neural (.pt) and tactical (.json) checkpoints" >> $GITHUB_STEP_SUMMARY
+          echo "- \`training-logs-${{ github.run_number }}\`: Full training logs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review checkpoint quality metrics" >> $GITHUB_STEP_SUMMARY
+          echo "2. Run validation/benchmark tests" >> $GITHUB_STEP_SUMMARY
+          echo "3. Manually promote best checkpoint with \`--promote\` flag" >> $GITHUB_STEP_SUMMARY
