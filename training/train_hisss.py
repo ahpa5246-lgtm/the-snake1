@@ -92,13 +92,30 @@ MAX_TURNS = 400
 # ---------------------------------------------------------------------------
 def load_production_weights() -> dict:
     """Current committed weights.json, or main.py's built-in defaults if the
-    file is missing. Training starts from here, not from scratch."""
+    file is missing. Training starts from here, not from scratch.
+
+    Always returns a schema matching engine.PHASE_WEIGHTS (all WEIGHT_KEYS
+    present for all PHASES). If weights.json exists but has old/missing keys,
+    merges valid keys and fills missing ones from engine.PHASE_WEIGHTS defaults.
+    Legacy keys (e.g., W_VORONOI, W_CORNER) are silently ignored.
+    """
+    # Start from a deep copy of the current engine defaults
+    base = {p.value: dict(w) for p, w in engine.PHASE_WEIGHTS.items()}
+
     if os.path.isfile(PROD_WEIGHTS_PATH):
-        with open(PROD_WEIGHTS_PATH) as f:
-            data = json.load(f)
-        if all(p in data for p in PHASES):
-            return data
-    return {p.value: dict(w) for p, w in engine.PHASE_WEIGHTS.items()}
+        try:
+            with open(PROD_WEIGHTS_PATH) as f:
+                data = json.load(f)
+            # Merge only valid keys from weights.json into base
+            for phase in PHASES:
+                if phase in data and isinstance(data[phase], dict):
+                    for key in WEIGHT_KEYS:
+                        if key in data[phase] and isinstance(data[phase][key], (int, float)):
+                            base[phase][key] = float(data[phase][key])
+        except Exception as e:
+            print(f"Warning: could not fully parse weights.json: {e}. Using engine defaults.")
+
+    return base
 
 
 def mutate(ind: dict, rate: float = 0.35, strength: float = 0.35) -> dict:
@@ -501,6 +518,20 @@ def promote():
     return 0
 
 
+def validate_weights_schema() -> bool:
+    """Verify that load_production_weights() returns all required WEIGHT_KEYS
+    for all PHASES. Raises AssertionError if schema is incomplete."""
+    weights = load_production_weights()
+    for phase in PHASES:
+        assert phase in weights, f"Missing phase: {phase}"
+        assert isinstance(weights[phase], dict), f"Phase {phase} is not a dict"
+        for key in WEIGHT_KEYS:
+            assert key in weights[phase], f"Missing key {key} in phase {phase}"
+            assert isinstance(weights[phase][key], (int, float)), f"Key {key} in phase {phase} is not numeric"
+    print(f"Schema validation passed: all {len(PHASES)} phases have all {len(WEIGHT_KEYS)} keys")
+    return True
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float, default=5.0)
@@ -511,7 +542,12 @@ if __name__ == "__main__":
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--promote", action="store_true")
+    ap.add_argument("--validate-schema", action="store_true", help="Test that load_production_weights() returns complete schema")
     args = ap.parse_args()
+
+    if args.validate_schema:
+        validate_weights_schema()
+        raise SystemExit(0)
 
     if args.promote:
         raise SystemExit(promote())
