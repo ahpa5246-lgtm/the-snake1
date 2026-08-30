@@ -86,7 +86,7 @@ jobs:
             exit 1
           fi
           RESTORED_ROOT=$(dirname "$MANIFEST")
-          python training/continuity.py validate --root "$RESTORED_ROOT"
+          python training/continuity.py validate --root "$RESTORED_ROOT" --expected-seed ${{ inputs.seed }}
           mkdir -p training/checkpoints
           cp -R "$RESTORED_ROOT"/. training/checkpoints/
           echo "Restored and validated checkpoints from workflow run $RESUME_RUN_ID"
