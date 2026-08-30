@@ -457,6 +457,11 @@ def train(args: argparse.Namespace) -> None:
     pool = PrioritizedOpponentPool.load(POOL_PATH)
     rng = random.Random(configuration.seed)
     if args.resume and resume_state:
+        checkpoint_seed = resume_state.get("seed")
+        if checkpoint_seed is not None and int(checkpoint_seed) != configuration.seed:
+            raise ValueError(
+                f"checkpoint seed {checkpoint_seed} does not match requested seed {configuration.seed}"
+            )
         if resume_state.get("python_random_state") is not None:
             random.setstate(resume_state["python_random_state"])
         if resume_state.get("rollout_random_state") is not None:
@@ -477,8 +482,11 @@ def train(args: argparse.Namespace) -> None:
             pool.record(names, won)
         metrics = ppo_update(model, optimizer, records, configuration, device)
         extra = {
+            "schema_version": 2,
+            "trainer": "neural-ppo",
             "update": update,
             "seed": configuration.seed,
+            "configuration": asdict(configuration),
             "learning_rate": configuration.learning_rate,
             "optimizer_state": optimizer.state_dict(),
             "win_rate": wins / max(1, configuration.games_per_update),
