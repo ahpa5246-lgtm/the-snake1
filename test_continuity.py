@@ -16,7 +16,7 @@ class ContinuityManifestTests(unittest.TestCase):
             checkpoint.write_bytes(b"model")
             manifest = write_manifest(root, seed=2026, run_id="42", source_sha="abc")
             self.assertEqual(manifest.name, MANIFEST_NAME)
-            payload = validate_manifest(root)
+            payload = validate_manifest(root, required_paths=["neural/latest.pt"])
             self.assertEqual(payload["seed"], 2026)
             self.assertEqual(payload["files"][0]["path"], "neural/latest.pt")
 
@@ -29,6 +29,26 @@ class ContinuityManifestTests(unittest.TestCase):
             write_manifest(root, seed=2026, run_id="42", source_sha="abc")
             with self.assertRaisesRegex(ValueError, "does not match requested seed"):
                 validate_manifest(root, expected_seed=7)
+
+    def test_missing_required_checkpoint_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "checkpoint.json"
+            checkpoint.write_text("{}")
+            write_manifest(root, seed=1, run_id="2", source_sha="abc")
+            with self.assertRaisesRegex(ValueError, "required checkpoint missing"):
+                validate_manifest(root, required_paths=["neural/latest.pt"])
+
+    def test_incompatible_schema_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / MANIFEST_NAME).write_text(json.dumps({
+                "schema_version": 99,
+                "seed": 1,
+                "files": [{"path": "checkpoint.json", "sha256": "unused"}],
+            }))
+            with self.assertRaisesRegex(ValueError, "unsupported checkpoint manifest schema"):
+                validate_manifest(root)
 
     def test_tampering_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
