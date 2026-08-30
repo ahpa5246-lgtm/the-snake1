@@ -24,6 +24,16 @@ on:
         options:
           - '1'
           - '2'
+      seed:
+        description: 'Deterministic training seed'
+        required: false
+        default: '2026'
+        type: string
+      resume_run_id:
+        description: 'Optional prior successful workflow run ID to resume exactly'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   train:
@@ -61,6 +71,26 @@ jobs:
           python -c "import hisss; print('hisss installed')"
           echo "::endgroup::"
 
+      - name: Restore exact prior-run checkpoints
+        if: ${{ inputs.resume_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        run: |
+          set -euo pipefail
+          mkdir restored
+          gh run download "$RESUME_RUN_ID" --repo "${{ github.repository }}" --dir restored
+          MANIFEST=$(find restored -type f -name continuity-manifest.json -print -quit)
+          if [ -z "$MANIFEST" ]; then
+            echo "::error::Run $RESUME_RUN_ID has no versioned checkpoint artifact"
+            exit 1
+          fi
+          RESTORED_ROOT=$(dirname "$MANIFEST")
+          python training/continuity.py validate --root "$RESTORED_ROOT"
+          mkdir -p training/checkpoints
+          cp -R "$RESTORED_ROOT"/. training/checkpoints/
+          echo "Restored and validated checkpoints from workflow run $RESUME_RUN_ID"
+
       - name: Run training cycles
         run: |
           set -o pipefail
@@ -89,12 +119,14 @@ jobs:
             NEURAL_START=$(date +%s)
 
             # Use --resume for cycle 2+ to continue from previous checkpoint
-            if [ $i -eq 1 ]; then
+            if [ $i -eq 1 ] && [ -z "${{ inputs.resume_run_id }}" ]; then
               python training/neural_selfplay.py \
                 --updates 5 \
                 --games-per-update 16 \
                 --workers 2 \
+                --seed ${{ inputs.seed }} \
                 --device cpu \
+                --seed ${{ inputs.seed }} \
                 2>&1 | tee -a training_cycle_${i}_neural.log
               NEURAL_EXIT=${PIPESTATUS[0]}
             else
@@ -102,7 +134,9 @@ jobs:
                 --updates 5 \
                 --games-per-update 16 \
                 --workers 2 \
+                --seed ${{ inputs.seed }} \
                 --device cpu \
+                --seed ${{ inputs.seed }} \
                 --resume \
                 2>&1 | tee -a training_cycle_${i}_neural.log
               NEURAL_EXIT=${PIPESTATUS[0]}
@@ -124,16 +158,18 @@ jobs:
             HISSS_START=$(date +%s)
 
             # Use --resume for cycle 2+ to continue from previous checkpoint
-            if [ $i -eq 1 ]; then
+            if [ $i -eq 1 ] && [ -z "${{ inputs.resume_run_id }}" ]; then
               python training/train_hisss.py \
                 --minutes 5 \
                 --workers 2 \
+                --seed ${{ inputs.seed }} \
                 2>&1 | tee -a training_cycle_${i}_hisss.log
               HISSS_EXIT=${PIPESTATUS[0]}
             else
               python training/train_hisss.py \
                 --minutes 5 \
                 --workers 2 \
+                --seed ${{ inputs.seed }} \
                 --resume \
                 2>&1 | tee -a training_cycle_${i}_hisss.log
               HISSS_EXIT=${PIPESTATUS[0]}
@@ -177,6 +213,16 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ **Weights NOT auto-promoted** - checkpoints saved for manual review" >> $GITHUB_STEP_SUMMARY
 
+      - name: Write versioned continuity manifest
+        if: success()
+        run: |
+          python training/continuity.py write \
+            --root training/checkpoints \
+            --seed ${{ inputs.seed }} \
+            --run-id "${{ github.run_id }}" \
+            --source-sha "${{ github.sha }}"
+          python training/continuity.py validate --root training/checkpoints
+
       - name: Upload training checkpoints
         if: always()
         uses: actions/upload-artifact@v4
@@ -185,6 +231,7 @@ jobs:
           path: |
             training/checkpoints/**/*.json
             training/checkpoints/**/*.pt
+            training/checkpoints/continuity-manifest.json
           retention-days: 30
 
       - name: Upload training logs
