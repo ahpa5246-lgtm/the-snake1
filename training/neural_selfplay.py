@@ -462,7 +462,9 @@ def train(args: argparse.Namespace) -> None:
         if resume_state.get("rollout_random_state") is not None:
             rng.setstate(resume_state["rollout_random_state"])
         if resume_state.get("torch_random_state") is not None:
-            torch.set_rng_state(resume_state["torch_random_state"])
+            torch.set_rng_state(resume_state["torch_random_state"].cpu())
+        if str(device).startswith("cuda") and resume_state.get("torch_cuda_random_state_all") is not None:
+            torch.cuda.set_rng_state_all([state.cpu() for state in resume_state["torch_cuda_random_state_all"]])
     print(f"device={device} updates={args.updates} games/update={configuration.games_per_update} pool={len(pool.entries)}")
     for update in range(start_update + 1, start_update + args.updates + 1):
         started = time.monotonic()
@@ -483,6 +485,7 @@ def train(args: argparse.Namespace) -> None:
             "python_random_state": random.getstate(),
             "rollout_random_state": rng.getstate(),
             "torch_random_state": torch.get_rng_state(),
+            "torch_cuda_random_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         }
         save_checkpoint(LATEST_PATH, model, extra=extra, board_size=configuration.board_size)
         if update % configuration.snapshot_interval == 0:
