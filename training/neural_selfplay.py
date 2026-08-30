@@ -431,7 +431,7 @@ def ppo_update(model: Any, optimizer: Any, records: list[dict[str, Any]], config
     return {key: value / divisor for key, value in totals.items()}
 
 
-def _load_or_create_model(device: str, resume: bool) -> tuple[Any, Any, int]:
+def _load_or_create_model(device: str, resume: bool) -> tuple[Any, Any, int, dict[str, Any]]:
     torch, _ = _dependencies()
     if resume and LATEST_PATH.is_file():
         from neural_policy import load_checkpoint
@@ -439,9 +439,9 @@ def _load_or_create_model(device: str, resume: bool) -> tuple[Any, Any, int]:
         optimizer = torch.optim.Adam(model.parameters(), lr=float(extra.get("learning_rate", 3e-4)))
         if extra.get("optimizer_state"):
             optimizer.load_state_dict(extra["optimizer_state"])
-        return model, optimizer, int(extra.get("update", 0))
+        return model, optimizer, int(extra.get("update", 0)), extra
     model = PolicyValueNet().to(device)
-    return model, torch.optim.Adam(model.parameters(), lr=3e-4), 0
+    return model, torch.optim.Adam(model.parameters(), lr=3e-4), 0, {}
 
 
 def train(args: argparse.Namespace) -> None:
@@ -453,9 +453,23 @@ def train(args: argparse.Namespace) -> None:
     if device == "auto":
         device = "cpu"
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    model, optimizer, start_update = _load_or_create_model(device, args.resume)
+    model, optimizer, start_update, resume_state = _load_or_create_model(device, args.resume)
     pool = PrioritizedOpponentPool.load(POOL_PATH)
     rng = random.Random(configuration.seed)
+    if args.resume and resume_state:
+        checkpoint_seed = resume_state.get("seed")
+        if checkpoint_seed is not None and int(checkpoint_seed) != configuration.seed:
+            raise ValueError(
+                f"checkpoint seed {checkpoint_seed} does not match requested seed {configuration.seed}"
+            )
+        if resume_state.get("python_random_state") is not None:
+            random.setstate(resume_state["python_random_state"])
+        if resume_state.get("rollout_random_state") is not None:
+            rng.setstate(resume_state["rollout_random_state"])
+        if resume_state.get("torch_random_state") is not None:
+            torch.set_rng_state(resume_state["torch_random_state"].cpu())
+        if str(device).startswith("cuda") and resume_state.get("torch_cuda_random_state_all") is not None:
+            torch.cuda.set_rng_state_all([state.cpu() for state in resume_state["torch_cuda_random_state_all"]])
     print(f"device={device} updates={args.updates} games/update={configuration.games_per_update} pool={len(pool.entries)}")
     for update in range(start_update + 1, start_update + args.updates + 1):
         started = time.monotonic()
@@ -467,7 +481,20 @@ def train(args: argparse.Namespace) -> None:
             wins += int(won)
             pool.record(names, won)
         metrics = ppo_update(model, optimizer, records, configuration, device)
-        extra = {"update": update, "learning_rate": configuration.learning_rate, "optimizer_state": optimizer.state_dict(), "win_rate": wins / max(1, configuration.games_per_update)}
+        extra = {
+            "schema_version": 2,
+            "trainer": "neural-ppo",
+            "update": update,
+            "seed": configuration.seed,
+            "configuration": asdict(configuration),
+            "learning_rate": configuration.learning_rate,
+            "optimizer_state": optimizer.state_dict(),
+            "win_rate": wins / max(1, configuration.games_per_update),
+            "python_random_state": random.getstate(),
+            "rollout_random_state": rng.getstate(),
+            "torch_random_state": torch.get_rng_state(),
+            "torch_cuda_random_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }
         save_checkpoint(LATEST_PATH, model, extra=extra, board_size=configuration.board_size)
         if update % configuration.snapshot_interval == 0:
             snapshot = CHECKPOINT_DIR / f"snapshot_{update:06d}.pt"

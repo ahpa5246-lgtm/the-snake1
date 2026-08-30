@@ -1,0 +1,45 @@
+name: Training Continuity CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/daily-train.yml"
+      - "training/**"
+      - "neural_policy.py"
+      - "test_continuity.py"
+      - ".github/workflows/training-continuity-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  continuity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile changed Python
+        run: python -m compileall -q training neural_policy.py test_continuity.py
+      - name: Run continuity tests
+        run: python -m unittest -v test_continuity.py
+      - name: Verify workflow safety invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          workflow = Path(".github/workflows/daily-train.yml").read_text()
+          required = [
+              "workflow_dispatch:",
+              "resume_run_id:",
+              "training/continuity.py validate",
+              "training/continuity.py write",
+              "Weights NOT auto-promoted",
+          ]
+          missing = [value for value in required if value not in workflow]
+          if missing:
+              raise SystemExit(f"missing workflow safety invariants: {missing}")
+          if "schedule:" in workflow:
+              raise SystemExit("daily training must remain manually dispatched until M2 is accepted")
+          PY

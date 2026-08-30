@@ -413,9 +413,25 @@ def load_checkpoint():
     return None
 
 
-def save_checkpoint(population, gen, best, best_fitness):
+def _tupleize(value):
+    if isinstance(value, list):
+        return tuple(_tupleize(item) for item in value)
+    return value
+
+
+def save_checkpoint(population, gen, best, best_fitness, seed, configuration):
     with open(CKPT_PATH, "w") as f:
-        json.dump({"population": population, "gen": gen, "best": best, "best_fitness": best_fitness}, f)
+        json.dump({
+            "schema_version": 2,
+            "trainer": "tactical-hisss",
+            "configuration": configuration,
+            "population": population,
+            "gen": gen,
+            "best": best,
+            "best_fitness": best_fitness,
+            "seed": seed,
+            "python_random_state": random.getstate(),
+        }, f)
     with open(BEST_PATH, "w") as f:
         json.dump(best, f, indent=2)
 
@@ -424,8 +440,16 @@ def run_training(args):
     ckpt = load_checkpoint() if args.resume else None
     if ckpt:
         population, gen, best, best_fitness = ckpt["population"], ckpt["gen"], ckpt["best"], ckpt["best_fitness"]
+        checkpoint_seed = int(ckpt.get("seed", args.seed))
+        if checkpoint_seed != args.seed:
+            raise ValueError(f"checkpoint seed {checkpoint_seed} does not match requested seed {args.seed}")
+        if ckpt.get("python_random_state") is not None:
+            random.setstate(_tupleize(ckpt["python_random_state"]))
+        else:
+            random.seed(int(ckpt.get("seed", args.seed)))
         print(f"resumed: gen={gen} best_fitness={best_fitness:.3f}")
     else:
+        random.seed(args.seed)
         base = load_production_weights()
         population = [base] + [mutate(base, rate=0.5, strength=0.5) for _ in range(args.population - 1)]
         gen, best, best_fitness = 0, base, -1e9
@@ -435,7 +459,7 @@ def run_training(args):
 
     def handle_sigint(signum, frame):
         print("\ninterrupted, saving checkpoint")
-        save_checkpoint(population, gen, best, best_fitness)
+        save_checkpoint(population, gen, best, best_fitness, args.seed, vars(args))
         pool.terminate()
         sys.exit(0)
 
@@ -474,7 +498,7 @@ def run_training(args):
                 new_pop.append(mutate(crossover(a, b)))
             population = new_pop
 
-            save_checkpoint(population, gen, best, best_fitness)
+            save_checkpoint(population, gen, best, best_fitness, args.seed, vars(args))
     finally:
         pool.close()
         pool.join()
@@ -540,6 +564,7 @@ if __name__ == "__main__":
     ap.add_argument("--games-per-eval", type=int, default=6)
     ap.add_argument("--selfplay-games", type=int, default=3)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--promote", action="store_true")
     ap.add_argument("--validate-schema", action="store_true", help="Test that load_production_weights() returns complete schema")
