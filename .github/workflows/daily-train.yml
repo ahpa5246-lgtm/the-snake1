@@ -35,6 +35,10 @@ on:
         default: ''
         type: string
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   train:
     runs-on: ubuntu-latest
@@ -86,7 +90,11 @@ jobs:
             exit 1
           fi
           RESTORED_ROOT=$(dirname "$MANIFEST")
-          python training/continuity.py validate --root "$RESTORED_ROOT" --expected-seed ${{ inputs.seed }}
+          python training/continuity.py validate \
+            --root "$RESTORED_ROOT" \
+            --expected-seed ${{ inputs.seed }} \
+            --required-path checkpoint.json \
+            --required-path neural/latest.pt
           mkdir -p training/checkpoints
           cp -R "$RESTORED_ROOT"/. training/checkpoints/
           echo "Restored and validated checkpoints from workflow run $RESUME_RUN_ID"
@@ -214,11 +222,17 @@ jobs:
       - name: Write versioned continuity manifest
         if: success()
         run: |
+          ORIGIN="fresh"
+          if [ -n "${{ inputs.resume_run_id }}" ]; then ORIGIN="workflow-run:${{ inputs.resume_run_id }}"; fi
           python training/continuity.py write \
             --root training/checkpoints \
             --seed ${{ inputs.seed }} \
             --run-id "${{ github.run_id }}" \
-            --source-sha "${{ github.sha }}"
+            --source-sha "${{ github.sha }}" \
+            --trainer neural-ppo \
+            --trainer tactical-hisss \
+            --configuration-json '{"cycles":${{ inputs.cycles }},"neural_updates":5,"games_per_update":16,"tactical_minutes":5,"workers":2,"device":"cpu"}' \
+            --checkpoint-origin "$ORIGIN"
           python training/continuity.py validate --root training/checkpoints
 
       - name: Upload training checkpoints
@@ -239,6 +253,7 @@ jobs:
           name: training-logs-${{ github.run_number }}
           path: |
             training_cycle_*.log
+            training/checkpoints/continuity-manifest.json
           retention-days: 30
 
       - name: Training report
