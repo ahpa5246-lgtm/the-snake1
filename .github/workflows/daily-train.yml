@@ -124,7 +124,6 @@ jobs:
                 --updates 5 \
                 --games-per-update 16 \
                 --workers 2 \
-                --seed ${{ inputs.seed }} \
                 --device cpu \
                 --seed ${{ inputs.seed }} \
                 2>&1 | tee -a training_cycle_${i}_neural.log
@@ -134,7 +133,6 @@ jobs:
                 --updates 5 \
                 --games-per-update 16 \
                 --workers 2 \
-                --seed ${{ inputs.seed }} \
                 --device cpu \
                 --seed ${{ inputs.seed }} \
                 --resume \
