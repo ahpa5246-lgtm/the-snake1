@@ -142,3 +142,31 @@ python3 training/train_blackout_elite.py --neural --updates 50 --games-per-updat
 ## المراجع
 
 [1] [Battlesnake, «Game Rules»](https://docs.battlesnake.com/rules) — الاصطدامات، الصحة والطعام، وترتيب حل الدور المتزامن.
+
+
+## استمرارية التدريب بين تشغيلات GitHub Actions
+
+مسار **Daily Training Pipeline** يبقى يدويًا فقط. عند بدء تشغيل جديد يمكن ترك
+`resume_run_id` فارغًا لبداية جديدة، أو إدخال رقم تشغيل سابق لاستعادة ملفاته
+بدقة. الاستعادة تستخدم `GITHUB_TOKEN` القياسي بصلاحية قراءة Actions فقط، ثم
+تتحقق من إصدار البيان، والبذرة، والملفات الإلزامية، وبصمات SHA-256 قبل تشغيل أي
+مدرّب. إذا كان الأثر مفقودًا أو منتهي الصلاحية أو غير متوافق يفشل التشغيل بوضوح
+ولا يبدأ تدريبًا جديدًا بصمت.
+
+فحص سريع محلي بلا تدريب طويل:
+
+```bash
+python -m compileall -q training neural_policy.py test_continuity.py
+python -m unittest -v test_continuity.py
+python training/neural_selfplay.py --help
+python training/train_hisss.py --validate-schema
+```
+
+كل تشغيل ناجح يرفع `continuity-manifest.json` مع نقاط التحقق والسجلات. يسجل
+البيان commit وrun ID والبذرة وإعدادات المدرّبين ومصدر الاستعادة وإصدارات Python
+والاعتماديات. مدة الاحتفاظ 30 يومًا؛ بعد انتهاء الأثر لا يمكن استئناف ذلك التشغيل.
+للرجوع، شغّل يدويًا باستخدام `resume_run_id` لأثر صالح أقدم. لا يعدّل هذا المسار
+`weights.json` ولا يروّج `latest.pt` أو `champion.pt` تلقائيًا.
+
+نجاح الاستئناف لا يعني أن أداء الثعبان تحسن. يلزم لاحقًا تقييم مكرر ببذور وخصوم
+محجوزين ومقارنة خط أساس قبل قبول أي نموذج، وتبقى المباريات العامة والنشر خارج M1.
