@@ -31,7 +31,16 @@ def checkpoint_files(root: Path) -> list[Path]:
     )
 
 
-def build_manifest(root: Path, *, seed: int, run_id: str, source_sha: str) -> dict:
+def build_manifest(
+    root: Path,
+    *,
+    seed: int,
+    run_id: str,
+    source_sha: str,
+    trainers: list[str] | None = None,
+    configuration: dict | None = None,
+    checkpoint_origin: str = "fresh",
+) -> dict:
     files = checkpoint_files(root)
     if not files:
         raise ValueError(f"no checkpoint files found under {root}")
@@ -47,6 +56,9 @@ def build_manifest(root: Path, *, seed: int, run_id: str, source_sha: str) -> di
         "seed": seed,
         "run_id": str(run_id),
         "source_sha": source_sha,
+        "trainers": trainers or [],
+        "configuration": configuration or {},
+        "checkpoint_origin": checkpoint_origin,
         "python": platform.python_version(),
         "platform": platform.platform(),
         "dependencies": versions,
@@ -57,17 +69,39 @@ def build_manifest(root: Path, *, seed: int, run_id: str, source_sha: str) -> di
     }
 
 
-def write_manifest(root: Path, *, seed: int, run_id: str, source_sha: str) -> Path:
+def write_manifest(
+    root: Path,
+    *,
+    seed: int,
+    run_id: str,
+    source_sha: str,
+    trainers: list[str] | None = None,
+    configuration: dict | None = None,
+    checkpoint_origin: str = "fresh",
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     destination = root / MANIFEST_NAME
     destination.write_text(
-        json.dumps(build_manifest(root, seed=seed, run_id=run_id, source_sha=source_sha), indent=2) + "\n",
+        json.dumps(build_manifest(
+            root,
+            seed=seed,
+            run_id=run_id,
+            source_sha=source_sha,
+            trainers=trainers,
+            configuration=configuration,
+            checkpoint_origin=checkpoint_origin,
+        ), indent=2) + "\n",
         encoding="utf-8",
     )
     return destination
 
 
-def validate_manifest(root: Path, *, expected_seed: int | None = None) -> dict:
+def validate_manifest(
+    root: Path,
+    *,
+    expected_seed: int | None = None,
+    required_paths: list[str] | None = None,
+) -> dict:
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
         raise ValueError(f"missing {MANIFEST_NAME} in restored checkpoint artifact")
@@ -81,6 +115,10 @@ def validate_manifest(root: Path, *, expected_seed: int | None = None) -> dict:
     files = payload.get("files")
     if not isinstance(files, list) or not files:
         raise ValueError("checkpoint manifest contains no files")
+    recorded_paths = {str(item.get("path", "")) for item in files}
+    for required in required_paths or []:
+        if required not in recorded_paths:
+            raise ValueError(f"required checkpoint missing from manifest: {required}")
     for item in files:
         relative = Path(str(item.get("path", "")))
         if relative.is_absolute() or ".." in relative.parts:
@@ -101,14 +139,34 @@ def main() -> int:
     parser.add_argument("--run-id", default="")
     parser.add_argument("--source-sha", default="")
     parser.add_argument("--expected-seed", type=int)
+    parser.add_argument("--required-path", action="append", default=[])
+    parser.add_argument("--trainer", action="append", default=[])
+    parser.add_argument("--configuration-json", default="{}")
+    parser.add_argument("--checkpoint-origin", default="fresh")
     args = parser.parse_args()
     if args.command == "write":
         if args.seed is None:
             parser.error("--seed is required for write")
-        path = write_manifest(args.root, seed=args.seed, run_id=args.run_id, source_sha=args.source_sha)
+        try:
+            configuration = json.loads(args.configuration_json)
+        except json.JSONDecodeError as error:
+            parser.error(f"--configuration-json is invalid: {error}")
+        path = write_manifest(
+            args.root,
+            seed=args.seed,
+            run_id=args.run_id,
+            source_sha=args.source_sha,
+            trainers=args.trainer,
+            configuration=configuration,
+            checkpoint_origin=args.checkpoint_origin,
+        )
         print(path)
     else:
-        payload = validate_manifest(args.root, expected_seed=args.expected_seed)
+        payload = validate_manifest(
+            args.root,
+            expected_seed=args.expected_seed,
+            required_paths=args.required_path,
+        )
         print(json.dumps({"schema_version": payload["schema_version"], "seed": payload["seed"], "run_id": payload["run_id"]}))
     return 0
 
