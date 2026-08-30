@@ -419,10 +419,12 @@ def _tupleize(value):
     return value
 
 
-def save_checkpoint(population, gen, best, best_fitness, seed):
+def save_checkpoint(population, gen, best, best_fitness, seed, configuration):
     with open(CKPT_PATH, "w") as f:
         json.dump({
             "schema_version": 2,
+            "trainer": "tactical-hisss",
+            "configuration": configuration,
             "population": population,
             "gen": gen,
             "best": best,
@@ -438,6 +440,9 @@ def run_training(args):
     ckpt = load_checkpoint() if args.resume else None
     if ckpt:
         population, gen, best, best_fitness = ckpt["population"], ckpt["gen"], ckpt["best"], ckpt["best_fitness"]
+        checkpoint_seed = int(ckpt.get("seed", args.seed))
+        if checkpoint_seed != args.seed:
+            raise ValueError(f"checkpoint seed {checkpoint_seed} does not match requested seed {args.seed}")
         if ckpt.get("python_random_state") is not None:
             random.setstate(_tupleize(ckpt["python_random_state"]))
         else:
@@ -454,7 +459,7 @@ def run_training(args):
 
     def handle_sigint(signum, frame):
         print("\ninterrupted, saving checkpoint")
-        save_checkpoint(population, gen, best, best_fitness, args.seed)
+        save_checkpoint(population, gen, best, best_fitness, args.seed, vars(args))
         pool.terminate()
         sys.exit(0)
 
@@ -493,7 +498,7 @@ def run_training(args):
                 new_pop.append(mutate(crossover(a, b)))
             population = new_pop
 
-            save_checkpoint(population, gen, best, best_fitness, args.seed)
+            save_checkpoint(population, gen, best, best_fitness, args.seed, vars(args))
     finally:
         pool.close()
         pool.join()
