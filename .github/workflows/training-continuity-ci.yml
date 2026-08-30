@@ -32,6 +32,9 @@ jobs:
           workflow = Path(".github/workflows/daily-train.yml").read_text()
           required = [
               "workflow_dispatch:",
+              "schedule:",
+              "ENABLE_DAILY_TRAINING",
+              "timeout-minutes: 60",
               "resume_run_id:",
               "training/continuity.py validate",
               "training/continuity.py write",
@@ -40,6 +43,10 @@ jobs:
           missing = [value for value in required if value not in workflow]
           if missing:
               raise SystemExit(f"missing workflow safety invariants: {missing}")
-          if "schedule:" in workflow:
-              raise SystemExit("daily training must remain manually dispatched until M2 is accepted")
+          if "timeout-minutes: 360" in workflow:
+              raise SystemExit("M2 training must retain the hard 60-minute job cap")
+          if "vars.ENABLE_DAILY_TRAINING == 'true'" not in workflow:
+              raise SystemExit("scheduled training must remain disabled unless the owner enables it")
+          if "options:\n          - '2'" in workflow:
+              raise SystemExit("M2 must run only one bounded cycle per invocation")
           PY
