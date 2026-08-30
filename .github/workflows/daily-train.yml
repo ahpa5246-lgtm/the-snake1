@@ -1,17 +1,9 @@
 name: "Daily Training Pipeline"
 
-# Production training workflow - runs 2 conservative cycles (~3 hours total)
-# based on validated timing trial measurements:
-#   - Neural Self-Play: ~11 minutes per cycle
-#   - Tactical Hisss: ~76 minutes per cycle
-#   - Total per cycle: ~87 minutes
-#   - 2 cycles: ~174 minutes (2h 54m) - well under 5-hour GitHub Actions limit
-#
-# Safety measures:
-#   - Manual trigger only (no schedule until validated)
-#   - Checkpoints saved as artifacts, never auto-promoted
-#   - Explicit --promote step required to update production weights.json
-#   - 6-hour timeout as failsafe
+# M2 bounded offline training and evaluation preparation.
+# The daily trigger is inert unless the repository owner sets
+# ENABLE_DAILY_TRAINING=true. Each run is capped at 60 minutes, preserves
+# deterministic seeds and versioned checkpoints, and never promotes weights.
 
 on:
   schedule:
@@ -19,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       cycles:
-        description: 'Number of training cycles (default: 2)'
+        description: 'Number of bounded training cycles'
         required: false
         default: '1'
         type: choice
@@ -82,7 +74,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Restore exact prior-run checkpoints
-        if: ${{ inputs.resume_run_id != '' }}
+        if: ${{ env.RESUME_RUN_ID != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RESUME_RUN_ID: ${{ env.RESUME_RUN_ID }}
