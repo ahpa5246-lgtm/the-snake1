@@ -20,6 +20,16 @@ class ContinuityManifestTests(unittest.TestCase):
             self.assertEqual(payload["seed"], 2026)
             self.assertEqual(payload["files"][0]["path"], "neural/latest.pt")
 
+    def test_seed_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "neural" / "latest.pt"
+            checkpoint.parent.mkdir()
+            checkpoint.write_bytes(b"model")
+            write_manifest(root, seed=2026, run_id="42", source_sha="abc")
+            with self.assertRaisesRegex(ValueError, "does not match requested seed"):
+                validate_manifest(root, expected_seed=7)
+
     def test_tampering_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
