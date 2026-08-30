@@ -67,7 +67,7 @@ def write_manifest(root: Path, *, seed: int, run_id: str, source_sha: str) -> Pa
     return destination
 
 
-def validate_manifest(root: Path) -> dict:
+def validate_manifest(root: Path, *, expected_seed: int | None = None) -> dict:
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
         raise ValueError(f"missing {MANIFEST_NAME} in restored checkpoint artifact")
@@ -76,6 +76,8 @@ def validate_manifest(root: Path) -> dict:
         raise ValueError(f"unsupported checkpoint manifest schema: {payload.get('schema_version')!r}")
     if not isinstance(payload.get("seed"), int):
         raise ValueError("checkpoint manifest seed must be an integer")
+    if expected_seed is not None and payload["seed"] != expected_seed:
+        raise ValueError(f"checkpoint seed {payload['seed']} does not match requested seed {expected_seed}")
     files = payload.get("files")
     if not isinstance(files, list) or not files:
         raise ValueError("checkpoint manifest contains no files")
@@ -98,6 +100,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--run-id", default="")
     parser.add_argument("--source-sha", default="")
+    parser.add_argument("--expected-seed", type=int)
     args = parser.parse_args()
     if args.command == "write":
         if args.seed is None:
@@ -105,7 +108,7 @@ def main() -> int:
         path = write_manifest(args.root, seed=args.seed, run_id=args.run_id, source_sha=args.source_sha)
         print(path)
     else:
-        payload = validate_manifest(args.root)
+        payload = validate_manifest(args.root, expected_seed=args.expected_seed)
         print(json.dumps({"schema_version": payload["schema_version"], "seed": payload["seed"], "run_id": payload["run_id"]}))
     return 0
 
