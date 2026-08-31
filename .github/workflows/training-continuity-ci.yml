@@ -22,9 +22,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile changed Python
-        run: python -m compileall -q training neural_policy.py test_continuity.py
+        run: python -m compileall -q training tests neural_policy.py test_continuity.py
       - name: Run continuity tests
         run: python -m unittest -v test_continuity.py
+      - name: Run evaluation gate tests
+        run: python -m unittest discover -s tests -p 'test_evaluation_gate.py' -v
       - name: Verify workflow safety invariants
         run: |
           python - <<'PY'
@@ -39,6 +41,12 @@ jobs:
               "training/continuity.py validate",
               "training/continuity.py write",
               "Weights NOT auto-promoted",
+              "Freeze pre-training neural baseline",
+              "Evaluate frozen neural candidate",
+              "training/evaluate_candidate.py",
+              "eligible_for_manual_review",
+              "--games-per-update 24",
+              "--minutes 8",
           ]
           missing = [value for value in required if value not in workflow]
           if missing:
@@ -49,4 +57,17 @@ jobs:
               raise SystemExit("scheduled training must remain disabled unless the owner enables it")
           if "options:\n          - '2'" in workflow:
               raise SystemExit("M2 must run only one bounded cycle per invocation")
+          if "--promote" in workflow:
+              raise SystemExit("daily evaluation must never promote a checkpoint")
+          evaluator = Path("training/evaluate_candidate.py").read_text()
+          evaluator_required = [
+              "frozen-held-out-hisss-v1",
+              "promotion_performed",
+              "eligible_for_manual_review",
+              "retain_frozen_baseline",
+              "evaluation seeds must not overlap the training seed",
+          ]
+          missing_evaluator = [value for value in evaluator_required if value not in evaluator]
+          if missing_evaluator:
+              raise SystemExit(f"missing evaluation safety invariants: {missing_evaluator}")
           PY
