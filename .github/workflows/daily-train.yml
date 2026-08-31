@@ -320,6 +320,6 @@ jobs:
           echo "- \`training-logs-${{ github.run_number }}\`: Full training logs" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ✅ Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Review checkpoint quality metrics" >> $GITHUB_STEP_SUMMARY
-          echo "2. Run validation/benchmark tests" >> $GITHUB_STEP_SUMMARY
-          echo "3. Manually promote best checkpoint with \`--promote\` flag" >> $GITHUB_STEP_SUMMARY
+          echo "1. Inspect the machine-readable held-out evaluation report" >> $GITHUB_STEP_SUMMARY
+          echo "2. Retain the frozen baseline unless the gate says eligible_for_manual_review" >> $GITHUB_STEP_SUMMARY
+          echo "3. Any promotion remains a separate explicit human-reviewed action" >> $GITHUB_STEP_SUMMARY
