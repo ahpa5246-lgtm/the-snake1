@@ -97,6 +97,32 @@ jobs:
           cp -R "$RESTORED_ROOT"/. training/checkpoints/
           echo "Restored and validated checkpoints from workflow run $RESUME_RUN_ID"
 
+      - name: Freeze pre-training neural baseline
+        run: |
+          set -euo pipefail
+          mkdir -p training/checkpoints/neural training/checkpoints/evaluation
+          if [ ! -f training/checkpoints/neural/latest.pt ]; then
+            python - <<'PY'
+          import os
+          import random
+          import torch
+          from neural_policy import PolicyValueNet, save_checkpoint
+
+          seed = int(os.environ["TRAINING_SEED"])
+          random.seed(seed)
+          torch.manual_seed(seed)
+          model = PolicyValueNet()
+          save_checkpoint(
+              "training/checkpoints/neural/latest.pt",
+              model,
+              extra={"schema_version": 2, "trainer": "neural-ppo", "update": 0, "seed": seed},
+          )
+          PY
+          fi
+          cp training/checkpoints/neural/latest.pt training/checkpoints/evaluation/baseline.pt
+          sha256sum training/checkpoints/evaluation/baseline.pt > training/checkpoints/evaluation/baseline.sha256
+          chmod a-w training/checkpoints/evaluation/baseline.pt
+
       - name: Run training cycles
         run: |
           set -o pipefail
@@ -128,7 +154,7 @@ jobs:
             if [ $i -eq 1 ] && [ -z "${{ env.RESUME_RUN_ID }}" ]; then
               python training/neural_selfplay.py \
                 --updates 5 \
-                --games-per-update 16 \
+                --games-per-update 24 \
                 --workers 2 \
                 --device cpu \
                 --seed ${{ env.TRAINING_SEED }} \
@@ -137,7 +163,7 @@ jobs:
             else
               python training/neural_selfplay.py \
                 --updates 5 \
-                --games-per-update 16 \
+                --games-per-update 24 \
                 --workers 2 \
                 --device cpu \
                 --seed ${{ env.TRAINING_SEED }} \
@@ -164,14 +190,14 @@ jobs:
             # Use --resume for cycle 2+ to continue from previous checkpoint
             if [ $i -eq 1 ] && [ -z "${{ env.RESUME_RUN_ID }}" ]; then
               python training/train_hisss.py \
-                --minutes 5 \
+                --minutes 8 \
                 --workers 2 \
                 --seed ${{ env.TRAINING_SEED }} \
                 2>&1 | tee -a training_cycle_${i}_hisss.log
               HISSS_EXIT=${PIPESTATUS[0]}
             else
               python training/train_hisss.py \
-                --minutes 5 \
+                --minutes 8 \
                 --workers 2 \
                 --seed ${{ env.TRAINING_SEED }} \
                 --resume \
@@ -217,6 +243,35 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ **Weights NOT auto-promoted** - checkpoints saved for manual review" >> $GITHUB_STEP_SUMMARY
 
+      - name: Evaluate frozen neural candidate
+        if: success()
+        run: |
+          set -euo pipefail
+          cp training/checkpoints/neural/latest.pt training/checkpoints/evaluation/candidate.pt
+          python training/evaluate_candidate.py \
+            --baseline training/checkpoints/evaluation/baseline.pt \
+            --candidate training/checkpoints/evaluation/candidate.pt \
+            --output training/checkpoints/evaluation/report.json \
+            --training-seed "$TRAINING_SEED" \
+            --seeds 7103 7109 7121 7127 7211 7213 7219 7229 \
+            --max-turns 250 \
+            --minimum-games 8 \
+            --minimum-score 0.55
+          python - <<'PY'
+          import json
+          import os
+
+          report = json.load(open("training/checkpoints/evaluation/report.json"))
+          gate = report["gate"]
+          candidate = report["candidate"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("### Frozen held-out evaluation\n\n")
+              summary.write(f"- Candidate score: {candidate['score']:.3f}\n")
+              summary.write(f"- Candidate record: {candidate['wins']}-{candidate['losses']}-{candidate['draws']}\n")
+              summary.write(f"- Recommendation: {gate['recommendation']}\n")
+              summary.write("- Promotion performed: no\n\n")
+          PY
+
       - name: Write versioned continuity manifest
         if: success()
         run: |
@@ -229,7 +284,7 @@ jobs:
             --source-sha "${{ github.sha }}" \
             --trainer neural-ppo \
             --trainer tactical-hisss \
-            --configuration-json '{"cycles":${{ env.CYCLES }},"neural_updates":5,"games_per_update":16,"tactical_minutes":5,"workers":2,"device":"cpu"}' \
+            --configuration-json '{"cycles":${{ env.CYCLES }},"neural_updates":5,"games_per_update":24,"tactical_minutes":8,"workers":2,"device":"cpu"}' \
             --checkpoint-origin "$ORIGIN"
           python training/continuity.py validate --root training/checkpoints
 
