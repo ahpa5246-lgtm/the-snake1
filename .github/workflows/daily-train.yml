@@ -1,29 +1,22 @@
 name: "Daily Training Pipeline"
 
-# Production training workflow - runs 2 conservative cycles (~3 hours total)
-# based on validated timing trial measurements:
-#   - Neural Self-Play: ~11 minutes per cycle
-#   - Tactical Hisss: ~76 minutes per cycle
-#   - Total per cycle: ~87 minutes
-#   - 2 cycles: ~174 minutes (2h 54m) - well under 5-hour GitHub Actions limit
-#
-# Safety measures:
-#   - Manual trigger only (no schedule until validated)
-#   - Checkpoints saved as artifacts, never auto-promoted
-#   - Explicit --promote step required to update production weights.json
-#   - 6-hour timeout as failsafe
+# M2 bounded offline training and evaluation preparation.
+# The daily trigger is inert unless the repository owner sets
+# ENABLE_DAILY_TRAINING=true. Each run is capped at 60 minutes, preserves
+# deterministic seeds and versioned checkpoints, and never promotes weights.
 
 on:
+  schedule:
+    - cron: '17 2 * * *'
   workflow_dispatch:
     inputs:
       cycles:
-        description: 'Number of training cycles (default: 2)'
+        description: 'Number of bounded training cycles'
         required: false
-        default: '2'
+        default: '1'
         type: choice
         options:
           - '1'
-          - '2'
       seed:
         description: 'Deterministic training seed'
         required: false
@@ -41,8 +34,13 @@ permissions:
 
 jobs:
   train:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.ENABLE_DAILY_TRAINING == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6-hour safety limit
+    timeout-minutes: 60
+    env:
+      CYCLES: ${{ github.event.inputs.cycles || '1' }}
+      TRAINING_SEED: ${{ github.event.inputs.seed || '2026' }}
+      RESUME_RUN_ID: ${{ github.event.inputs.resume_run_id || '' }}
 
     steps:
       - name: Checkout repository
@@ -76,10 +74,10 @@ jobs:
           echo "::endgroup::"
 
       - name: Restore exact prior-run checkpoints
-        if: ${{ inputs.resume_run_id != '' }}
+        if: ${{ env.RESUME_RUN_ID != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          RESUME_RUN_ID: ${{ env.RESUME_RUN_ID }}
         run: |
           set -euo pipefail
           mkdir restored
@@ -92,18 +90,44 @@ jobs:
           RESTORED_ROOT=$(dirname "$MANIFEST")
           python training/continuity.py validate \
             --root "$RESTORED_ROOT" \
-            --expected-seed ${{ inputs.seed }} \
+            --expected-seed ${{ env.TRAINING_SEED }} \
             --required-path checkpoint.json \
             --required-path neural/latest.pt
           mkdir -p training/checkpoints
           cp -R "$RESTORED_ROOT"/. training/checkpoints/
           echo "Restored and validated checkpoints from workflow run $RESUME_RUN_ID"
 
+      - name: Freeze pre-training neural baseline
+        run: |
+          set -euo pipefail
+          mkdir -p training/checkpoints/neural training/checkpoints/evaluation
+          if [ ! -f training/checkpoints/neural/latest.pt ]; then
+            python - <<'PY'
+          import os
+          import random
+          import torch
+          from neural_policy import PolicyValueNet, save_checkpoint
+
+          seed = int(os.environ["TRAINING_SEED"])
+          random.seed(seed)
+          torch.manual_seed(seed)
+          model = PolicyValueNet()
+          save_checkpoint(
+              "training/checkpoints/neural/latest.pt",
+              model,
+              extra={"schema_version": 2, "trainer": "neural-ppo", "update": 0, "seed": seed},
+          )
+          PY
+          fi
+          cp training/checkpoints/neural/latest.pt training/checkpoints/evaluation/baseline.pt
+          sha256sum training/checkpoints/evaluation/baseline.pt > training/checkpoints/evaluation/baseline.sha256
+          chmod a-w training/checkpoints/evaluation/baseline.pt
+
       - name: Run training cycles
         run: |
           set -o pipefail
 
-          CYCLES=${{ inputs.cycles }}
+          CYCLES="$CYCLES"
           echo "=========================================="
           echo "Daily Training Pipeline"
           echo "Cycles: $CYCLES"
@@ -127,22 +151,22 @@ jobs:
             NEURAL_START=$(date +%s)
 
             # Use --resume for cycle 2+ to continue from previous checkpoint
-            if [ $i -eq 1 ] && [ -z "${{ inputs.resume_run_id }}" ]; then
+            if [ $i -eq 1 ] && [ -z "${{ env.RESUME_RUN_ID }}" ]; then
               python training/neural_selfplay.py \
                 --updates 5 \
-                --games-per-update 16 \
+                --games-per-update 24 \
                 --workers 2 \
                 --device cpu \
-                --seed ${{ inputs.seed }} \
+                --seed ${{ env.TRAINING_SEED }} \
                 2>&1 | tee -a training_cycle_${i}_neural.log
               NEURAL_EXIT=${PIPESTATUS[0]}
             else
               python training/neural_selfplay.py \
                 --updates 5 \
-                --games-per-update 16 \
+                --games-per-update 24 \
                 --workers 2 \
                 --device cpu \
-                --seed ${{ inputs.seed }} \
+                --seed ${{ env.TRAINING_SEED }} \
                 --resume \
                 2>&1 | tee -a training_cycle_${i}_neural.log
               NEURAL_EXIT=${PIPESTATUS[0]}
@@ -164,18 +188,18 @@ jobs:
             HISSS_START=$(date +%s)
 
             # Use --resume for cycle 2+ to continue from previous checkpoint
-            if [ $i -eq 1 ] && [ -z "${{ inputs.resume_run_id }}" ]; then
+            if [ $i -eq 1 ] && [ -z "${{ env.RESUME_RUN_ID }}" ]; then
               python training/train_hisss.py \
-                --minutes 5 \
+                --minutes 8 \
                 --workers 2 \
-                --seed ${{ inputs.seed }} \
+                --seed ${{ env.TRAINING_SEED }} \
                 2>&1 | tee -a training_cycle_${i}_hisss.log
               HISSS_EXIT=${PIPESTATUS[0]}
             else
               python training/train_hisss.py \
-                --minutes 5 \
+                --minutes 8 \
                 --workers 2 \
-                --seed ${{ inputs.seed }} \
+                --seed ${{ env.TRAINING_SEED }} \
                 --resume \
                 2>&1 | tee -a training_cycle_${i}_hisss.log
               HISSS_EXIT=${PIPESTATUS[0]}
@@ -219,19 +243,48 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ **Weights NOT auto-promoted** - checkpoints saved for manual review" >> $GITHUB_STEP_SUMMARY
 
+      - name: Evaluate frozen neural candidate
+        if: success()
+        run: |
+          set -euo pipefail
+          cp training/checkpoints/neural/latest.pt training/checkpoints/evaluation/candidate.pt
+          python training/evaluate_candidate.py \
+            --baseline training/checkpoints/evaluation/baseline.pt \
+            --candidate training/checkpoints/evaluation/candidate.pt \
+            --output training/checkpoints/evaluation/report.json \
+            --training-seed "$TRAINING_SEED" \
+            --seeds 7103 7109 7121 7127 7211 7213 7219 7229 \
+            --max-turns 250 \
+            --minimum-games 8 \
+            --minimum-score 0.55
+          python - <<'PY'
+          import json
+          import os
+
+          report = json.load(open("training/checkpoints/evaluation/report.json"))
+          gate = report["gate"]
+          candidate = report["candidate"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("### Frozen held-out evaluation\n\n")
+              summary.write(f"- Candidate score: {candidate['score']:.3f}\n")
+              summary.write(f"- Candidate record: {candidate['wins']}-{candidate['losses']}-{candidate['draws']}\n")
+              summary.write(f"- Recommendation: {gate['recommendation']}\n")
+              summary.write("- Promotion performed: no\n\n")
+          PY
+
       - name: Write versioned continuity manifest
         if: success()
         run: |
           ORIGIN="fresh"
-          if [ -n "${{ inputs.resume_run_id }}" ]; then ORIGIN="workflow-run:${{ inputs.resume_run_id }}"; fi
+          if [ -n "$RESUME_RUN_ID" ]; then ORIGIN="workflow-run:$RESUME_RUN_ID"; fi
           python training/continuity.py write \
             --root training/checkpoints \
-            --seed ${{ inputs.seed }} \
+            --seed ${{ env.TRAINING_SEED }} \
             --run-id "${{ github.run_id }}" \
             --source-sha "${{ github.sha }}" \
             --trainer neural-ppo \
             --trainer tactical-hisss \
-            --configuration-json '{"cycles":${{ inputs.cycles }},"neural_updates":5,"games_per_update":16,"tactical_minutes":5,"workers":2,"device":"cpu"}' \
+            --configuration-json '{"cycles":${{ env.CYCLES }},"neural_updates":5,"games_per_update":24,"tactical_minutes":8,"workers":2,"device":"cpu"}' \
             --checkpoint-origin "$ORIGIN"
           python training/continuity.py validate --root training/checkpoints
 
@@ -267,6 +320,6 @@ jobs:
           echo "- \`training-logs-${{ github.run_number }}\`: Full training logs" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ✅ Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Review checkpoint quality metrics" >> $GITHUB_STEP_SUMMARY
-          echo "2. Run validation/benchmark tests" >> $GITHUB_STEP_SUMMARY
-          echo "3. Manually promote best checkpoint with \`--promote\` flag" >> $GITHUB_STEP_SUMMARY
+          echo "1. Inspect the machine-readable held-out evaluation report" >> $GITHUB_STEP_SUMMARY
+          echo "2. Retain the frozen baseline unless the gate says eligible_for_manual_review" >> $GITHUB_STEP_SUMMARY
+          echo "3. Any promotion remains a separate explicit human-reviewed action" >> $GITHUB_STEP_SUMMARY
