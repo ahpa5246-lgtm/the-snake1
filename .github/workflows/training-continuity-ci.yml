@@ -7,6 +7,7 @@ on:
       - "training/**"
       - "neural_policy.py"
       - "test_continuity.py"
+      - "tests/test_evaluation_gate.py"
       - ".github/workflows/training-continuity-ci.yml"
 
 permissions:
@@ -61,11 +62,15 @@ jobs:
               raise SystemExit("daily evaluation must never promote a checkpoint")
           evaluator = Path("training/evaluate_candidate.py").read_text()
           evaluator_required = [
-              "frozen-held-out-hisss-v1",
+              "frozen-held-out-hisss-v2-mirrored",
               "promotion_performed",
               "eligible_for_manual_review",
               "retain_frozen_baseline",
               "evaluation seeds must not overlap the training seed",
+              "environment.available_actions(player_index)",
+              "config.all_actions_legal = False",
+              "mirrored_slot_pairs",
+              "sha256_model_state",
           ]
           missing_evaluator = [value for value in evaluator_required if value not in evaluator]
           if missing_evaluator:

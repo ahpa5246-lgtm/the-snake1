@@ -21,8 +21,8 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-SCHEMA_VERSION = 1
-PROTOCOL = "frozen-held-out-hisss-v1"
+SCHEMA_VERSION = 2
+PROTOCOL = "frozen-held-out-hisss-v2-mirrored"
 DEFAULT_HELD_OUT_SEEDS = (7103, 7109, 7121, 7127, 7211, 7213, 7219, 7229)
 
 
@@ -31,6 +31,28 @@ def sha256_file(path: str | Path) -> str:
     with Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_model_state(model_state: dict[str, Any]) -> str:
+    """Digest policy parameters without checkpoint optimizer/RNG metadata."""
+    digest = hashlib.sha256()
+    for name in sorted(model_state):
+        value = model_state[name]
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        if hasattr(value, "detach"):
+            tensor = value.detach().cpu().contiguous()
+            digest.update(str(tensor.dtype).encode("ascii"))
+            digest.update(json.dumps(list(tensor.shape), separators=(",", ":")).encode("ascii"))
+            digest.update(tensor.view(-1).numpy().tobytes())
+        elif isinstance(value, (bytes, bytearray, memoryview)):
+            digest.update(bytes(value))
+        else:
+            digest.update(
+                json.dumps(value, sort_keys=True, separators=(",", ":"), default=repr).encode("utf-8")
+            )
+        digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -49,18 +71,61 @@ def _rate(numerator: float, denominator: int) -> float:
     return round(numerator / max(1, denominator), 6)
 
 
+def mirrored_slot_pairs(game_number: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return a seat assignment and its exact candidate/baseline mirror."""
+    candidate_slot = game_number % 4
+    baseline_slot = (candidate_slot + 2) % 4
+    return ((candidate_slot, baseline_slot), (baseline_slot, candidate_slot))
+
+
+def select_legal_action(
+    selected: Any,
+    available_actions: Iterable[Any],
+    fallback_order: Iterable[Any],
+) -> tuple[Any, bool]:
+    """Return a legal deterministic action and whether the policy was invalid."""
+    available = tuple(available_actions)
+    if not available:
+        raise RuntimeError("engine returned no available actions for a player at turn")
+    if selected in available:
+        return selected, False
+    for fallback in fallback_order:
+        if fallback in available:
+            return fallback, True
+    return available[0], True
+
+
+def validate_mirrored_matches(matches: list[dict[str, Any]], seeds: list[int]) -> None:
+    """Require both candidate/baseline seat orders for every held-out seed."""
+    if len(matches) != len(seeds) * 2:
+        raise ValueError("two mirrored match results are required for every held-out seed")
+    expected = set(seeds)
+    observed = {int(match["seed"]) for match in matches}
+    if observed != expected:
+        raise ValueError("mirrored match seeds do not match the held-out set")
+    for seed in seeds:
+        paired = [match for match in matches if int(match["seed"]) == seed]
+        placements = {
+            (int(match["candidate"]["slot"]), int(match["baseline"]["slot"]))
+            for match in paired
+        }
+        if len(placements) != 2 or not all((baseline, candidate) in placements for candidate, baseline in placements):
+            raise ValueError(f"held-out seed {seed} is missing a mirrored seat assignment")
+
+
 def summarize_matches(
     matches: list[dict[str, Any]],
     *,
-    baseline_sha256: str,
-    candidate_sha256: str,
+    baseline_model_sha256: str,
+    candidate_model_sha256: str,
+    baseline_checkpoint_sha256: str,
+    candidate_checkpoint_sha256: str,
     seeds: list[int],
-    minimum_games: int = 8,
+    minimum_games: int = 16,
     minimum_score: float = 0.55,
 ) -> dict[str, Any]:
     """Build the review gate report without importing torch or hisss."""
-    if len(matches) != len(seeds):
-        raise ValueError("one match result is required for every held-out seed")
+    validate_mirrored_matches(matches, seeds)
 
     wins = sum(match["outcome"] == "candidate_win" for match in matches)
     losses = sum(match["outcome"] == "baseline_win" for match in matches)
@@ -75,7 +140,7 @@ def summarize_matches(
     )
 
     enough_evidence = len(matches) >= minimum_games
-    distinct_candidate = baseline_sha256 != candidate_sha256
+    distinct_candidate = baseline_model_sha256 != candidate_model_sha256
     score = _rate(candidate_points, len(matches))
     gate_passed = (
         enough_evidence
@@ -101,11 +166,17 @@ def summarize_matches(
         "protocol": PROTOCOL,
         "promotion_performed": False,
         "checkpoints": {
-            "baseline_sha256": baseline_sha256,
-            "candidate_sha256": candidate_sha256,
+            "baseline_file_sha256": baseline_checkpoint_sha256,
+            "candidate_file_sha256": candidate_checkpoint_sha256,
+            "distinct_files": baseline_checkpoint_sha256 != candidate_checkpoint_sha256,
+        },
+        "model_states": {
+            "baseline_sha256": baseline_model_sha256,
+            "candidate_sha256": candidate_model_sha256,
             "distinct": distinct_candidate,
         },
         "held_out_seeds": seeds,
+        "matches_per_seed": 2,
         "thresholds": {
             "minimum_games": minimum_games,
             "minimum_score": minimum_score,
@@ -143,7 +214,7 @@ def summarize_matches(
 def _fixed_scenario(hisss: Any, seed: int) -> Any:
     """Create a scenario whose initial state is completely derived from seed."""
     config = hisss.restricted_standard_config()
-    config.all_actions_legal = True
+    config.all_actions_legal = False
     config.food_spawn_chance = 0
     config.min_food = 0
     config.init_snake_pos = {
@@ -190,7 +261,9 @@ def _play_match(
     *,
     board_size: int,
     seed: int,
-    game_number: int,
+    candidate_slot: int,
+    baseline_slot: int,
+    mirror_index: int,
     max_turns: int,
 ) -> dict[str, Any]:
     import hisss
@@ -199,8 +272,8 @@ def _play_match(
 
     random.seed(seed)
     torch.manual_seed(seed)
-    candidate_slot = game_number % 4
-    baseline_slot = (candidate_slot + 2) % 4
+    if candidate_slot == baseline_slot:
+        raise ValueError("candidate and baseline must occupy different slots")
     agents: list[Any] = [
         TacticalGameAgent(f"eval-{seed}-tactical-{slot}") for slot in range(4)
     ]
@@ -225,10 +298,13 @@ def _play_match(
         for player_index in order:
             raw = json.loads(hisss.to_battlesnake_json(environment, player_index))
             direction = agents[player_index].choose(raw)
-            action = direction_map.get(direction)
-            if action is None:
+            action, was_invalid = select_legal_action(
+                direction_map.get(direction),
+                environment.available_actions(player_index),
+                direction_map.values(),
+            )
+            if was_invalid:
                 invalid[player_index] += 1
-                action = hisss.UP
             actions.append(action)
         environment.step(actions=tuple(actions))
         alive = set(environment.players_alive())
@@ -281,6 +357,7 @@ def _play_match(
         outcome = "draw"
     return {
         "seed": seed,
+        "mirror_index": mirror_index,
         "turns": turn,
         "winner_slot": winner,
         "outcome": outcome,
@@ -299,31 +376,42 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             raise FileNotFoundError(f"checkpoint not found: {path}")
 
     seeds = validate_held_out_seeds(args.seeds, args.training_seed)
-    baseline_sha = sha256_file(baseline_path)
-    candidate_sha = sha256_file(candidate_path)
+    baseline_checkpoint_sha = sha256_file(baseline_path)
+    candidate_checkpoint_sha = sha256_file(candidate_path)
     baseline_model, baseline_meta, _ = load_checkpoint(baseline_path, device="cpu")
     candidate_model, candidate_meta, _ = load_checkpoint(candidate_path, device="cpu")
     if baseline_meta != candidate_meta:
         raise ValueError("candidate and baseline checkpoint metadata differ")
+    baseline_model_sha = sha256_model_state(baseline_model.state_dict())
+    candidate_model_sha = sha256_model_state(candidate_model.state_dict())
 
-    matches = [
-        _play_match(
-            candidate_model,
-            baseline_model,
-            board_size=candidate_meta.board_size,
-            seed=seed,
-            game_number=index,
-            max_turns=args.max_turns,
-        )
-        for index, seed in enumerate(seeds)
-    ]
-    if sha256_file(baseline_path) != baseline_sha or sha256_file(candidate_path) != candidate_sha:
+    matches = []
+    for index, seed in enumerate(seeds):
+        for mirror_index, (candidate_slot, baseline_slot) in enumerate(mirrored_slot_pairs(index)):
+            matches.append(
+                _play_match(
+                    candidate_model,
+                    baseline_model,
+                    board_size=candidate_meta.board_size,
+                    seed=seed,
+                    candidate_slot=candidate_slot,
+                    baseline_slot=baseline_slot,
+                    mirror_index=mirror_index,
+                    max_turns=args.max_turns,
+                )
+            )
+    if (
+        sha256_file(baseline_path) != baseline_checkpoint_sha
+        or sha256_file(candidate_path) != candidate_checkpoint_sha
+    ):
         raise RuntimeError("evaluation mutated a frozen checkpoint")
 
     report = summarize_matches(
         matches,
-        baseline_sha256=baseline_sha,
-        candidate_sha256=candidate_sha,
+        baseline_model_sha256=baseline_model_sha,
+        candidate_model_sha256=candidate_model_sha,
+        baseline_checkpoint_sha256=baseline_checkpoint_sha,
+        candidate_checkpoint_sha256=candidate_checkpoint_sha,
         seeds=seeds,
         minimum_games=args.minimum_games,
         minimum_score=args.minimum_score,
@@ -342,7 +430,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--training-seed", type=int, required=True)
     parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_HELD_OUT_SEEDS))
     parser.add_argument("--max-turns", type=int, default=250)
-    parser.add_argument("--minimum-games", type=int, default=8)
+    parser.add_argument("--minimum-games", type=int, default=16)
     parser.add_argument("--minimum-score", type=float, default=0.55)
     return parser.parse_args()
 
