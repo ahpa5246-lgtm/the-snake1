@@ -3,8 +3,12 @@
 # ASGI framework + routing
 fastapi>=0.111.0
 
-# Production ASGI server (blazing fast, multi-worker)
+# Production ASGI server
 uvicorn[standard]>=0.29.0
 
 # Data validation (FastAPI dependency)
 pydantic>=2.7.0
+
+# CPU neural inference for the automatically promoted champion.
+# Training-only hisss/numpy dependencies remain in requirements-training.txt.
+torch>=2.3.0
