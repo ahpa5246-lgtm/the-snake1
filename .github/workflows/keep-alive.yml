@@ -1,0 +1,43 @@
+name: Keep Moses Staff Awake
+
+on:
+  schedule:
+    # Render free services spin down after inactivity. Avoid minute 0 where
+    # scheduled GitHub Actions commonly experience heavier queueing.
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-keep-alive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping Battlesnake endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://the-snake1.onrender.com/"
+          echo "Pinging $URL"
+          curl --fail --silent --show-error \
+            --location \
+            --connect-timeout 20 \
+            --max-time 90 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            -H 'User-Agent: Moses-Staff-KeepAlive/1.0' \
+            "$URL" > response.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('response.json').read_text())
+          assert data.get('apiversion') == '1', f"Unexpected response: {data}"
+          print('Battlesnake is awake and returned a valid API response.')
+          PY
