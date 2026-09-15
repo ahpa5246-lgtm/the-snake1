@@ -1,15 +1,14 @@
-"""Benchmark a candidate against the current champion and promote safely.
-
-The live model is never replaced merely because training finished. A candidate
-must beat the incumbent in paired held-out games. If there is no champion yet,
-the first trained candidate becomes the bootstrap champion.
-"""
+"""Benchmark a candidate against the current champion and promote safely."""
 from __future__ import annotations
 
 import argparse
 import random
 import shutil
+import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 from neural_policy import load_checkpoint, torch_required
 from training.neural_selfplay import PPOConfig, PoolEntry, PrioritizedOpponentPool, collect_games_vectorized
@@ -32,17 +31,14 @@ def main() -> None:
     parser.add_argument("--minimum-win-rate", type=float, default=0.55)
     parser.add_argument("--seed", type=int, default=260915)
     args = parser.parse_args()
-
     torch_required()
     if not args.candidate.is_file():
         raise SystemExit(f"Candidate not found: {args.candidate}")
     args.champion.parent.mkdir(parents=True, exist_ok=True)
-
     if not args.champion.is_file():
         shutil.copy2(args.candidate, args.champion)
         print("PROMOTED bootstrap candidate: no previous champion existed")
         return
-
     win_rate = evaluate(args.candidate, args.champion, args.games, args.workers, args.seed)
     print(f"candidate_vs_champion games={args.games} win_rate={win_rate:.3f} threshold={args.minimum_win_rate:.3f}")
     if win_rate >= args.minimum_win_rate:
