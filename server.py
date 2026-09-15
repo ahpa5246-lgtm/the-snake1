@@ -1,7 +1,8 @@
 """Production ASGI entrypoint with transparent live-match recording.
 
-Run ``uvicorn server:app`` on Battlesnake/Render. The tactical application stays
-unchanged; this middleware observes the official HTTP traffic and records it.
+Besides observing Battlesnake traffic, this wrapper exposes a tiny read-only
+learning endpoint. The scheduled GitHub learner downloads completed replay data
+before training, so Render's ephemeral filesystem is not the long-term store.
 """
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import time
 from typing import Any
 
 from main import app as tactical_app
-from live_recorder import record_end, record_move, record_start
+from live_recorder import record_end, record_move, record_start, replay_dir
 
 
 class LiveReplayMiddleware:
@@ -18,6 +19,21 @@ class LiveReplayMiddleware:
         self.app = app
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http" and scope.get("method") == "GET" and scope.get("path") == "/learning/replays":
+            games: list[dict[str, Any]] = []
+            for path in sorted(replay_dir().glob("*.jsonl")):
+                try:
+                    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                    # Export only completed games; never train on half a live match.
+                    if events and events[-1].get("type") == "end":
+                        games.append({"name": path.name, "events": events})
+                except (OSError, ValueError, TypeError):
+                    continue
+            body = json.dumps({"games": games}, separators=(",", ":")).encode("utf-8")
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json"), (b"cache-control", b"no-store")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+
         if scope.get("type") != "http" or scope.get("method") != "POST" or scope.get("path") not in {"/start", "/move", "/end"}:
             await self.app(scope, receive, send)
             return
