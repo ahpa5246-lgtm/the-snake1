@@ -8,3 +8,5 @@ services:
     envVars:
       - key: BATTLESNAKE_REPLAY_DIR
         value: training/live_games
+      - key: BATTLESNAKE_MODEL_PATH
+        value: training/checkpoints/neural/champion.pt
