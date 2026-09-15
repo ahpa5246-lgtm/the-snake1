@@ -1,0 +1,63 @@
+name: Continual Learning
+
+on:
+  schedule:
+    - cron: '37 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: battlesnake-continual-learning
+  cancel-in-progress: false
+
+jobs:
+  train-benchmark-promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install training dependencies
+        run: pip install -r requirements-training.txt
+      - name: Train candidate with self-play
+        run: |
+          set -euo pipefail
+          mkdir -p training/checkpoints/neural
+          if [ -f training/checkpoints/neural/champion.pt ] && [ ! -f training/checkpoints/neural/latest.pt ]; then
+            cp training/checkpoints/neural/champion.pt training/checkpoints/neural/latest.pt
+          fi
+          python training/neural_selfplay.py \
+            --updates 2 \
+            --games-per-update 24 \
+            --workers 2 \
+            --epochs 3 \
+            --device cpu \
+            --resume
+      - name: Benchmark and promote only if candidate wins
+        run: |
+          python training/auto_promote.py \
+            --candidate training/checkpoints/neural/latest.pt \
+            --champion training/checkpoints/neural/champion.pt \
+            --games 24 \
+            --workers 2 \
+            --minimum-win-rate 0.55
+      - name: Commit promoted brain and league state
+        run: |
+          set -euo pipefail
+          git config user.name 'Moses Staff Learning Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add training/checkpoints/neural/champion.pt training/checkpoints/neural/latest.pt training/checkpoints/neural/opponent_pool.json training/checkpoints/neural/snapshot_*.pt 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo 'No promoted/training state changes to commit.'
+            exit 0
+          fi
+          git commit -m 'bot: learn from automated self-play'
+          git pull --rebase origin main
+          git push origin HEAD:main
