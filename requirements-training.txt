@@ -1,6 +1,6 @@
-# Training-only dependencies. Keep these separate from requirements.txt so the
-# Battlesnake HTTP service remains lightweight and has a deterministic fallback.
-# Install the CUDA wheel recommended by PyTorch for the actual training machine.
-torch>=2.3.0
+# Training imports the tactical FastAPI module for its safety mask and teacher
+# policy, so the production dependencies are required too.  requirements.txt
+# also selects the CPU-only PyTorch wheel used by GitHub-hosted runners.
+-r requirements.txt
 numpy>=1.26.0
 hisss>=0.1.0

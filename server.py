@@ -7,7 +7,9 @@ before training, so Render's ephemeral filesystem is not the long-term store.
 from __future__ import annotations
 
 import json
+import os
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from main import app as tactical_app
@@ -21,15 +23,23 @@ class LiveReplayMiddleware:
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") == "http" and scope.get("method") == "GET" and scope.get("path") == "/learning/replays":
             games: list[dict[str, Any]] = []
-            for path in sorted(replay_dir().glob("*.jsonl")):
+            limit = max(1, min(500, int(os.getenv("BATTLESNAKE_REPLAY_EXPORT_LIMIT", "250"))))
+            paths = sorted(replay_dir().glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True)
+            for path in paths:
                 try:
                     events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
                     # Export only completed games; never train on half a live match.
                     if events and events[-1].get("type") == "end":
                         games.append({"name": path.name, "events": events})
+                        if len(games) >= limit:
+                            break
                 except (OSError, ValueError, TypeError):
                     continue
-            body = json.dumps({"games": games}, separators=(",", ":")).encode("utf-8")
+            body = json.dumps({
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "games": games,
+                "export_limit": limit,
+            }, separators=(",", ":")).encode("utf-8")
             await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json"), (b"cache-control", b"no-store")]})
             await send({"type": "http.response.body", "body": body})
             return

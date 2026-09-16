@@ -78,6 +78,14 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Ephemeral Battlesnake learning state. GitHub Actions persists these in its
+# cache; only a benchmarked champion is force-added to the deployment branch.
+training/live_games/
+training/live-replay-ledger.json
+training/live-import-summary.json
+training/promotion-result.json
+training/checkpoints/neural/
+
 # IPython
 profile_default/
 ipython_config.py

@@ -596,6 +596,10 @@ def on_end(state: GameState) -> str:
 
 
 _load_weight_overrides()
+# Load a promoted model during process startup, not on the first competitive
+# move.  A cold PyTorch import/checkpoint load must never consume the move
+# endpoint's 200 ms decision budget.
+NeuralAdvisor._load()
 
 if __name__ == "__main__":
     import uvicorn

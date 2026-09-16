@@ -10,5 +10,7 @@ uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
 
 # CPU neural inference for the automatically promoted champion.
-# Training-only hisss/numpy dependencies remain in requirements-training.txt.
-torch>=2.3.0
+# Pin the CPU wheel explicitly.  The default Linux wheel now pulls several GB
+# of CUDA libraries even though Render and the GitHub learner both run on CPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu

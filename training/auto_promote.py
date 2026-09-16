@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import shutil
 import sys
@@ -30,22 +31,33 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--minimum-win-rate", type=float, default=0.55)
     parser.add_argument("--seed", type=int, default=260915)
+    parser.add_argument("--result-json", type=Path)
     args = parser.parse_args()
     torch_required()
     if not args.candidate.is_file():
         raise SystemExit(f"Candidate not found: {args.candidate}")
     args.champion.parent.mkdir(parents=True, exist_ok=True)
+    result = {"promoted": False, "bootstrap": False, "win_rate": None, "minimum_win_rate": args.minimum_win_rate}
     if not args.champion.is_file():
         shutil.copy2(args.candidate, args.champion)
+        result.update({"promoted": True, "bootstrap": True})
         print("PROMOTED bootstrap candidate: no previous champion existed")
+        if args.result_json:
+            args.result_json.parent.mkdir(parents=True, exist_ok=True)
+            args.result_json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return
     win_rate = evaluate(args.candidate, args.champion, args.games, args.workers, args.seed)
+    result["win_rate"] = win_rate
     print(f"candidate_vs_champion games={args.games} win_rate={win_rate:.3f} threshold={args.minimum_win_rate:.3f}")
     if win_rate >= args.minimum_win_rate:
         shutil.copy2(args.candidate, args.champion)
+        result["promoted"] = True
         print("PROMOTED candidate -> champion")
     else:
         print("REJECTED candidate; incumbent champion remains live")
+    if args.result_json:
+        args.result_json.parent.mkdir(parents=True, exist_ok=True)
+        args.result_json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
