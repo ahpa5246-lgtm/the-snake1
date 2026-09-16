@@ -66,19 +66,36 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p training/live_games
+          REPLAY_READY=false
           if curl --fail --silent --show-error --location \
             --connect-timeout 20 --max-time 120 \
             --retry 3 --retry-delay 5 --retry-all-errors \
             -H 'User-Agent: Moses-Staff-Learner/2.0' \
             https://moses-staff-keeper.moses-staff.workers.dev/api/replays \
-            -o "$RUNNER_TEMP/live-replays.json"; then
+            -o "$RUNNER_TEMP/live-replays.json" && \
+            python -c "import json,sys; p=json.load(open('$RUNNER_TEMP/live-replays.json')); sys.exit(0 if isinstance(p.get('games'), list) else 1)"; then
+            echo 'Using durable Cloudflare replay export.'
+            REPLAY_READY=true
+          else
+            echo '::warning::Cloudflare replay export is unavailable; falling back to Render.'
+            if curl --fail --silent --show-error --location \
+              --connect-timeout 20 --max-time 120 \
+              --retry 3 --retry-delay 5 --retry-all-errors \
+              -H 'User-Agent: Moses-Staff-Learner/2.0' \
+              https://the-snake1.onrender.com/learning/replays \
+              -o "$RUNNER_TEMP/live-replays.json" && \
+              python -c "import json,sys; p=json.load(open('$RUNNER_TEMP/live-replays.json')); sys.exit(0 if isinstance(p.get('games'), list) else 1)"; then
+              REPLAY_READY=true
+            fi
+          fi
+          if [ "$REPLAY_READY" = true ]; then
             python training/import_live_replays.py \
               --source "$RUNNER_TEMP/live-replays.json" \
               --destination training/live_games \
               --ledger training/live-replay-ledger.json \
               --summary training/live-import-summary.json
           else
-            echo '::warning::Render replay export was unavailable; continuing with self-play.'
+            echo '::warning::No valid replay export was available; continuing with self-play.'
             printf '{"available_games":0,"new_games":0,"duplicate_games":0,"rejected_games":0,"ledger_entries":0}\n' \
               > training/live-import-summary.json
           fi
