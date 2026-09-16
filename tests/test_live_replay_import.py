@@ -11,14 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from training.import_live_replays import import_batch
 
 
-def completed_game(game_id: str) -> dict:
+def completed_game(game_id: str, *, won: bool = False, turn: int = 1, ended_at: str = "2026-09-16T12:00:00+00:00") -> dict:
     state = {"game": {"id": game_id}, "turn": 1, "board": {"snakes": []}, "you": {"id": "us"}}
     return {
         "name": f"{game_id}.jsonl",
         "events": [
             {"type": "start", "game_id": game_id, "state": state},
             {"type": "move", "game_id": game_id, "turn": 1, "move": "up", "state": state},
-            {"type": "end", "game_id": game_id, "turn": 1, "won": False, "state": state},
+            {"type": "end", "game_id": game_id, "turn": turn, "won": won, "ended_at_utc": ended_at, "state": state},
         ],
     }
 
@@ -34,6 +34,9 @@ class LiveReplayImportTests(unittest.TestCase):
             self.assertEqual(first["new_games"], 1)
             self.assertEqual(second["new_games"], 0)
             self.assertEqual(second["duplicate_games"], 1)
+            self.assertEqual(second["cumulative_games"], 1)
+            self.assertEqual(second["cumulative_losses"], 1)
+            self.assertEqual(second["learning_cycles"], 2)
             replay = next(destination.glob("*.jsonl"))
             self.assertEqual(len(replay.read_text(encoding="utf-8").splitlines()), 3)
 
@@ -47,6 +50,24 @@ class LiveReplayImportTests(unittest.TestCase):
             summary = import_batch(source, root / "games", root / "ledger.json")
             self.assertEqual(summary["new_games"], 0)
             self.assertEqual(summary["rejected_games"], 1)
+
+    def test_accumulates_durable_match_stats(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination, ledger = root / "batch.json", root / "games", root / "ledger.json"
+            source.write_text(json.dumps({"games": [
+                completed_game("winner", won=True, turn=76, ended_at="2026-09-16T13:00:00+00:00"),
+                completed_game("loss", turn=4, ended_at="2026-09-16T12:00:00+00:00"),
+            ]}), encoding="utf-8")
+            summary = import_batch(source, destination, ledger)
+            self.assertEqual(summary["cumulative_games"], 2)
+            self.assertEqual(summary["cumulative_wins"], 1)
+            self.assertEqual(summary["cumulative_losses"], 1)
+            self.assertEqual(summary["cumulative_turns"], 80)
+            self.assertEqual(summary["cumulative_recorded_moves"], 2)
+            self.assertEqual(summary["cumulative_win_rate"], 0.5)
+            self.assertEqual(summary["first_game_utc"], "2026-09-16T12:00:00+00:00")
+            self.assertEqual(summary["last_game_utc"], "2026-09-16T13:00:00+00:00")
 
 
 if __name__ == "__main__":
