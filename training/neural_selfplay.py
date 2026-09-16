@@ -185,9 +185,19 @@ def _action_mask(raw: dict[str, Any], game_tag: str) -> set[str]:
 
 
 class NeuralGameAgent:
-    def __init__(self, model: Any, device: str, board_size: int, *, stochastic: bool, tag: str) -> None:
+    def __init__(
+        self,
+        model: Any,
+        device: str,
+        board_size: int,
+        *,
+        stochastic: bool,
+        tag: str,
+        record_transitions: bool = True,
+    ) -> None:
         self.model, self.device, self.board_size = model, device, board_size
         self.stochastic, self.tag = stochastic, tag
+        self.record_transitions = record_transitions
         self.pending: dict[str, Any] | None = None
 
     def choose(self, raw: dict[str, Any]) -> str:
@@ -200,13 +210,14 @@ class NeuralGameAgent:
             distribution = torch.distributions.Categorical(logits=masked_logits)
             action = distribution.sample() if self.stochastic else torch.argmax(masked_logits, dim=1)
             index = int(action.item())
-            if self.pending is not None:
-                raise RuntimeError("Unresolved action record")
-            self.pending = {
-                "observation": observation.squeeze(0).cpu(), "action": index,
-                "log_prob": float(distribution.log_prob(action).item()), "value": float(value.item()),
-                "legal": legal,
-            }
+            if self.record_transitions:
+                if self.pending is not None:
+                    raise RuntimeError("Unresolved action record")
+                self.pending = {
+                    "observation": observation.squeeze(0).cpu(), "action": index,
+                    "log_prob": float(distribution.log_prob(action).item()), "value": float(value.item()),
+                    "legal": legal,
+                }
         return DIRECTIONS[index]
 
 
@@ -246,7 +257,14 @@ def _build_opponent(entry: PoolEntry, device: str, board_size: int, rng: random.
     if entry.kind == "random":
         return RandomGameAgent(rng, tag)
     try:
-        return NeuralGameAgent(_load_snapshot(entry, device), device, board_size, stochastic=True, tag=tag)
+        return NeuralGameAgent(
+            _load_snapshot(entry, device),
+            device,
+            board_size,
+            stochastic=True,
+            tag=tag,
+            record_transitions=False,
+        )
     except Exception:
         # A moved/invalid archived checkpoint should not derail long training.
         return TacticalGameAgent(tag)
