@@ -1,8 +1,9 @@
 # Moses' Staff Cloudflare keeper
 
 This Worker runs every five minutes, requests the Render API, and stores durable
-uptime counters in Workers KV. Its public root URL returns the current status as
-JSON; `/check` performs an immediate check and returns the updated counters.
+uptime counters and completed Battlesnake replays in Workers KV. Its public root
+URL serves an Arabic match dashboard; `/api/status` returns JSON, `/api/replays`
+feeds the learner, and `/check` performs an immediate full refresh.
 
 One-time deployment:
 
@@ -20,6 +21,7 @@ Copy the returned namespace ID into `wrangler.jsonc`, replacing
 npm run deploy
 ```
 
-After deployment, open the Worker URL once and confirm that `total_checks`
-increases every five minutes. This external cron is the primary Render
-keep-awake mechanism; GitHub's scheduled keep-alive remains a fallback.
+After deployment, open the Worker URL and confirm that its dashboard loads.
+The free-plan write budget is protected by writing match and training records
+only when they change. The five-minute uptime record is the only unconditional
+KV write. This external cron is the primary Render keep-awake mechanism.
