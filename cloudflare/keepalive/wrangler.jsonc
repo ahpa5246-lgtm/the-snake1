@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "moses-staff-keeper",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-16",
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    "SNAKE_URL": "https://the-snake1.onrender.com/"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "STATUS",
+      "id": "REPLACE_WITH_CLOUDFLARE_KV_NAMESPACE_ID"
+    }
+  ]
+}
