@@ -45,6 +45,7 @@ def _empty_stats() -> dict[str, Any]:
         "total_games": 0,
         "wins": 0,
         "losses": 0,
+        "unclassified_games": 0,
         "total_turns": 0,
         "recorded_moves": 0,
         "first_game_utc": None,
@@ -67,6 +68,11 @@ def _load_ledger(path: Path) -> tuple[list[str], dict[str, Any]]:
             for key in stats:
                 if key in stored_stats:
                     stats[key] = stored_stats[key]
+        if processed and not stored_stats:
+            # Preserve the known match count when upgrading a pre-telemetry
+            # ledger. Outcome and turn details were not stored historically.
+            stats["total_games"] = len(processed)
+            stats["unclassified_games"] = len(processed)
         return processed, stats
     except (OSError, ValueError, TypeError):
         return [], _empty_stats()
@@ -141,6 +147,7 @@ def import_batch(source: Path, destination: Path, ledger_path: Path) -> dict[str
         "cumulative_games": cumulative_games,
         "cumulative_wins": wins,
         "cumulative_losses": int(stats["losses"]),
+        "cumulative_unclassified_games": int(stats["unclassified_games"]),
         "cumulative_win_rate": round(wins / cumulative_games, 4) if cumulative_games else 0.0,
         "cumulative_turns": int(stats["total_turns"]),
         "cumulative_recorded_moves": int(stats["recorded_moves"]),

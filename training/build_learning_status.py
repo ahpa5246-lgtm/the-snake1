@@ -56,6 +56,7 @@ def build_status(
         "matches_processed": games,
         "wins": wins,
         "losses": int(stats.get("losses", 0) or 0),
+        "unclassified_historical_matches": int(stats.get("unclassified_games", 0) or 0),
         "win_rate": round(wins / games, 4) if games else 0.0,
         "total_turns": int(stats.get("total_turns", 0) or 0),
         "recorded_moves": int(stats.get("recorded_moves", 0) or 0),
