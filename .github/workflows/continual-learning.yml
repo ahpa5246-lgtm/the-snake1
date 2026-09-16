@@ -42,7 +42,6 @@ jobs:
           path: |
             training/checkpoints/neural
             training/live-replay-ledger.json
-            training/learning-status.json
           key: snake-learning-${{ github.run_id }}
           restore-keys: |
             snake-learning-
@@ -153,7 +152,6 @@ jobs:
           path: |
             training/checkpoints/neural
             training/live-replay-ledger.json
-            training/learning-status.json
           key: snake-learning-${{ github.run_id }}
 
       - name: Publish inspectable learning report
