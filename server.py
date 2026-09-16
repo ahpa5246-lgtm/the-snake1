@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from main import app as tactical_app
-from live_recorder import record_end, record_move, record_start, replay_dir
+from live_recorder import record_end, record_move, record_start, replay_activity, replay_dir
 
 
 class LiveReplayMiddleware:
@@ -39,6 +39,7 @@ class LiveReplayMiddleware:
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
                 "games": games,
                 "export_limit": limit,
+                "activity": replay_activity(),
             }, separators=(",", ":")).encode("utf-8")
             await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json"), (b"cache-control", b"no-store")]})
             await send({"type": "http.response.body", "body": body})

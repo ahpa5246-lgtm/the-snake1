@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,30 @@ _LOCK = threading.Lock()
 def replay_dir() -> Path:
     _REPLAY_DIR.mkdir(parents=True, exist_ok=True)
     return _REPLAY_DIR
+
+
+def replay_activity(active_window_seconds: int = 120) -> dict[str, Any]:
+    """Summarize current BattleSnake traffic without exposing partial games."""
+    now = time.time()
+    active_games = 0
+    last_activity = 0.0
+    for path in replay_dir().glob("*.jsonl"):
+        try:
+            modified = path.stat().st_mtime
+            last_activity = max(last_activity, modified)
+            if now - modified > active_window_seconds:
+                continue
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            last_event = json.loads(lines[-1]) if lines else {}
+            if last_event.get("type") != "end":
+                active_games += 1
+        except (OSError, ValueError, TypeError):
+            continue
+    return {
+        "currently_playing": active_games > 0,
+        "active_games": active_games,
+        "last_activity_utc": datetime.fromtimestamp(last_activity, timezone.utc).isoformat() if last_activity else None,
+    }
 
 
 def _game_id(state: dict[str, Any]) -> str:
