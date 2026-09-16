@@ -69,6 +69,16 @@ class LiveReplayImportTests(unittest.TestCase):
             self.assertEqual(summary["first_game_utc"], "2026-09-16T12:00:00+00:00")
             self.assertEqual(summary["last_game_utc"], "2026-09-16T13:00:00+00:00")
 
+    def test_migrates_pre_telemetry_ledger_without_losing_match_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination, ledger = root / "batch.json", root / "games", root / "ledger.json"
+            ledger.write_text(json.dumps({"schema_version": 1, "processed": ["old-a:digest", "old-b:digest"]}), encoding="utf-8")
+            source.write_text('{"games": []}', encoding="utf-8")
+            summary = import_batch(source, destination, ledger)
+            self.assertEqual(summary["cumulative_games"], 2)
+            self.assertEqual(summary["cumulative_unclassified_games"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
