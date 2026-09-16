@@ -42,6 +42,7 @@ jobs:
           path: |
             training/checkpoints/neural
             training/live-replay-ledger.json
+            training/learning-status.json
           key: snake-learning-${{ github.run_id }}
           restore-keys: |
             snake-learning-
@@ -116,6 +117,16 @@ jobs:
             --minimum-win-rate 0.55 \
             --result-json training/promotion-result.json
 
+      - name: Build cumulative learning status
+        run: |
+          python -m training.build_learning_status \
+            --ledger training/live-replay-ledger.json \
+            --import-summary training/live-import-summary.json \
+            --promotion training/promotion-result.json \
+            --checkpoint training/checkpoints/neural/latest.pt \
+            --run-id '${{ github.run_id }}' \
+            --output training/learning-status.json
+
       - name: Publish only an improved champion
         run: |
           set -euo pipefail
@@ -142,7 +153,19 @@ jobs:
           path: |
             training/checkpoints/neural
             training/live-replay-ledger.json
+            training/learning-status.json
           key: snake-learning-${{ github.run_id }}
+
+      - name: Publish inspectable learning report
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-status-${{ github.run_id }}
+          path: |
+            training/learning-status.json
+            training/live-import-summary.json
+            training/promotion-result.json
+          retention-days: 90
 
       - name: Learning summary
         if: ${{ always() }}
@@ -156,5 +179,11 @@ jobs:
           if [ -f training/promotion-result.json ]; then
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             cat training/promotion-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f training/learning-status.json ]; then
+            echo '#### Cumulative autonomous status' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat training/learning-status.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
