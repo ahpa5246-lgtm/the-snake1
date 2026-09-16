@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -59,5 +60,6 @@ def record_end(state: dict[str, Any]) -> None:
         "type": "end", "game_id": game_id, "turn": int(state.get("turn", 0)),
         "won": won, "alive": our_id in alive_ids if our_id else False,
         "final_length": int(you.get("length", len(you.get("body", []) or [])) or 0),
+        "ended_at_utc": datetime.now(timezone.utc).isoformat(),
         "state": state,
     })

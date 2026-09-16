@@ -2,7 +2,9 @@ name: Continual Learning
 
 on:
   schedule:
-    - cron: '37 2 * * *'
+    # Pull real leaderboard games four times a day. Minute 23 avoids GitHub's
+    # documented top-of-hour congestion window.
+    - cron: '23 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,44 +22,139 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-      - name: Install training dependencies
-        run: pip install -r requirements-training.txt
-      - name: Train candidate with self-play
+
+      - name: Preserve the deployed champion
+        run: |
+          mkdir -p "$RUNNER_TEMP/deployed"
+          if [ -f training/checkpoints/neural/champion.pt ]; then
+            cp training/checkpoints/neural/champion.pt "$RUNNER_TEMP/deployed/champion.pt"
+          fi
+
+      - name: Restore private learning state
+        id: restore-learning-state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            training/checkpoints/neural
+            training/live-replay-ledger.json
+          key: snake-learning-${{ github.run_id }}
+          restore-keys: |
+            snake-learning-
+
+      - name: Re-apply the deployed champion
         run: |
           set -euo pipefail
           mkdir -p training/checkpoints/neural
+          if [ -f "$RUNNER_TEMP/deployed/champion.pt" ]; then
+            cp "$RUNNER_TEMP/deployed/champion.pt" training/checkpoints/neural/champion.pt
+          fi
           if [ -f training/checkpoints/neural/champion.pt ] && [ ! -f training/checkpoints/neural/latest.pt ]; then
             cp training/checkpoints/neural/champion.pt training/checkpoints/neural/latest.pt
           fi
+
+      - name: Install CPU training dependencies
+        run: pip install -r requirements-training.txt
+
+      - name: Download completed Battlesnake.com games
+        id: live-games
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p training/live_games
+          if curl --fail --silent --show-error --location \
+            --connect-timeout 20 --max-time 120 \
+            --retry 3 --retry-delay 5 --retry-all-errors \
+            -H 'User-Agent: Moses-Staff-Learner/2.0' \
+            https://the-snake1.onrender.com/learning/replays \
+            -o "$RUNNER_TEMP/live-replays.json"; then
+            python training/import_live_replays.py \
+              --source "$RUNNER_TEMP/live-replays.json" \
+              --destination training/live_games \
+              --ledger training/live-replay-ledger.json \
+              --summary training/live-import-summary.json
+          else
+            echo '::warning::Render replay export was unavailable; continuing with self-play.'
+            printf '{"available_games":0,"new_games":0,"duplicate_games":0,"rejected_games":0,"ledger_entries":0}\n' \
+              > training/live-import-summary.json
+          fi
+          NEW_GAMES=$(python -c "import json; print(json.load(open('training/live-import-summary.json'))['new_games'])")
+          echo "new_games=$NEW_GAMES" >> "$GITHUB_OUTPUT"
+          echo "Imported $NEW_GAMES new completed Battlesnake.com games."
+
+      - name: Continue bounded self-play
+        run: |
           python training/neural_selfplay.py \
-            --updates 2 \
-            --games-per-update 24 \
+            --updates 1 \
+            --games-per-update 16 \
             --workers 2 \
             --epochs 3 \
             --device cpu \
             --resume
+
+      - name: Fine-tune on new real matches
+        if: ${{ steps.live-games.outputs.new_games != '0' }}
+        run: |
+          python training/live_finetune.py \
+            --replays training/live_games \
+            --checkpoint training/checkpoints/neural/latest.pt \
+            --epochs 3 \
+            --tail-turns 20 \
+            --max-examples 6000
+
       - name: Benchmark and promote only if candidate wins
         run: |
           python training/auto_promote.py \
             --candidate training/checkpoints/neural/latest.pt \
             --champion training/checkpoints/neural/champion.pt \
-            --games 24 \
+            --games 32 \
             --workers 2 \
-            --minimum-win-rate 0.55
-      - name: Commit promoted brain and league state
+            --minimum-win-rate 0.55 \
+            --result-json training/promotion-result.json
+
+      - name: Publish only an improved champion
         run: |
           set -euo pipefail
-          git config user.name 'Moses Staff Learning Bot'
-          git config user.email 'actions@users.noreply.github.com'
-          git add training/checkpoints/neural/champion.pt training/checkpoints/neural/latest.pt training/checkpoints/neural/opponent_pool.json training/checkpoints/neural/snapshot_*.pt 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo 'No promoted/training state changes to commit.'
+          PROMOTED=$(python -c "import json; print(str(json.load(open('training/promotion-result.json'))['promoted']).lower())")
+          if [ "$PROMOTED" != "true" ]; then
+            echo 'Candidate did not beat the deployed champion; Render will not be restarted.'
             exit 0
           fi
-          git commit -m 'bot: learn from automated self-play'
+          git config user.name 'Moses Staff Learning Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -f training/checkpoints/neural/champion.pt
+          if git diff --cached --quiet; then
+            echo 'Champion is unchanged.'
+            exit 0
+          fi
+          git commit -m 'bot: promote stronger live-trained champion'
           git pull --rebase origin main
           git push origin HEAD:main
+
+      - name: Save learning state without redeploying Render
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            training/checkpoints/neural
+            training/live-replay-ledger.json
+          key: snake-learning-${{ github.run_id }}
+
+      - name: Learning summary
+        if: ${{ always() }}
+        run: |
+          echo '### Continual learning' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f training/live-import-summary.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat training/live-import-summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f training/promotion-result.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat training/promotion-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi

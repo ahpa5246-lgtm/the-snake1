@@ -12,7 +12,9 @@ permissions:
 
 concurrency:
   group: render-keep-alive
-  cancel-in-progress: true
+  # A delayed run must not cancel another wake-up that is already reaching a
+  # cold Render instance. Each job is bounded to three minutes.
+  cancel-in-progress: false
 
 jobs:
   ping:

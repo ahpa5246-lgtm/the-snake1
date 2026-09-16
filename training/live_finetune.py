@@ -85,7 +85,12 @@ def main() -> None:
             total += float(loss.detach()) * len(batch)
         print(f"live_epoch={epoch + 1} examples={len(examples)} loss={total / len(examples):.4f}")
     extra = dict(extra)
+    # The previous PPO optimizer moments no longer describe these parameters
+    # after supervised live-match adaptation.  Let the following self-play run
+    # create a fresh optimizer instead of applying stale momentum.
+    extra.pop("optimizer_state", None)
     extra["live_examples"] = int(extra.get("live_examples", 0)) + len(examples)
+    extra["last_live_examples"] = len(examples)
     save_checkpoint(args.checkpoint, model, extra=extra, board_size=board_size)
 
 
