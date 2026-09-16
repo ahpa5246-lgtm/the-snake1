@@ -99,7 +99,7 @@ jobs:
       - name: Fine-tune on new real matches
         if: ${{ steps.live-games.outputs.new_games != '0' }}
         run: |
-          python training/live_finetune.py \
+          python -m training.live_finetune \
             --replays training/live_games \
             --checkpoint training/checkpoints/neural/latest.pt \
             --epochs 3 \
