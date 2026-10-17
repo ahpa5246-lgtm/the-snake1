@@ -88,6 +88,11 @@ def survive_horizon(candidate: tuple[int, int], ctx: Any, depth: int = 5) -> boo
     if not body:
         return True
     static = ctx.occupied.difference(body)
+    # Defensive normalization: manually assembled test contexts may list
+    # enemies without having merged their bodies into occupied.
+    for enemy in getattr(ctx, "enemy_data", []):
+        other = enemy.get("body", [])
+        static.update(other if is_constrictor(mode) else other[:-1])
     foods = frozenset(ctx.visible_food)
     initial = move_body(body, candidate, foods, ctx.our_health, ctx.hazard_set,
                         ctx.hazard_dmg, static, ctx.width, ctx.height, mode)
