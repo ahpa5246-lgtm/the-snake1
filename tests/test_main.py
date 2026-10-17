@@ -90,7 +90,8 @@ def test_is_certain_death_out_of_bounds():
 def test_is_certain_death_occupied():
     ctx = create_mock_context(our_head=(5, 5), occupied={(6, 5)})
     # Candidate moving into occupied cell
-    assert TacticalEngine._is_certain_death((6, 5), ctx) is True
+    assert TacticalEngine._is_certain_death((6, 5), ctx) is False
+    assert TacticalEngine._head_risk((6, 5), ctx) == 2
 
 
 def test_is_certain_death_fatal_hazard():
