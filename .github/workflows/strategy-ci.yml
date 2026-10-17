@@ -8,6 +8,7 @@ on:
       - "tests/test_main.py"
       - "tests/test_competitive_engine.py"
       - "tests/test_strategy_search.py"
+      - "test_seed8_regression.py"
       - ".github/workflows/strategy-ci.yml"
   push:
     branches:
@@ -36,3 +37,5 @@ jobs:
         run: python -m compileall -q main.py strategy_search.py tests
       - name: Tactical rules and endpoint regressions
         run: python -m pytest -q tests/test_main.py tests/test_competitive_engine.py tests/test_strategy_search.py
+      - name: Blackout seed and latency regressions
+        run: python -m pytest -q test_seed8_regression.py
