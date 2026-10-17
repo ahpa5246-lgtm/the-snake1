@@ -104,8 +104,9 @@ def test_is_certain_death_h2h_loss():
     # We are length 3 (shorter)
     ctx = create_mock_context(our_head=(5, 5), our_len=3, enemy_data=[enemy])
     
-    # Candidate (6, 5) is adjacent to enemy head (6, 6)
-    assert TacticalEngine._is_certain_death((6, 5), ctx) is True
+    # The enemy could contest (6, 5), but might move elsewhere.
+    assert TacticalEngine._is_certain_death((6, 5), ctx) is False
+    assert TacticalEngine._head_risk((6, 5), ctx) == 2
 
 
 def test_flood_fill_space():

@@ -24,11 +24,12 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from strategy_search import game_mode, head_to_head_risk, is_constrictor, safe_food_distance, survive_horizon
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
 log = logging.getLogger("battlesnake")
 
-app = FastAPI(title="الثعبان — Battlesnake Competitive Engine", version="12.0.0")
+app = FastAPI(title="الثعبان — Battlesnake Competitive Engine", version="13.0.0")
 
 
 class GameState(BaseModel):
@@ -41,7 +42,7 @@ SNAKE_INFO: dict[str, Any] = {
     "color": "#FF0000",
     "head": "default",
     "tail": "default",
-    "version": "12.0.0",
+    "version": "13.0.0",
 }
 
 # This is deliberately below a typical 250 ms engine timeout.  The deadline is
@@ -51,7 +52,7 @@ FOOD_STALE_TTL = 18
 HUNGER_CRITICAL = 28
 HAZARD_SOFT_HEALTH = 30
 CORRIDOR_MARGIN = 2
-ESCAPE_DEPTH = 3
+ESCAPE_DEPTH = 5
 ESCAPE_MARGIN = 2
 
 _game_memory: dict[str, dict[str, Any]] = {}
@@ -85,6 +86,7 @@ class GameContext:
     deadline: float
     ghost_zones: set[tuple[int, int]]
     unseen_cells: set[tuple[int, int]]
+    game_mode: str = "standard"
 
 
 # Scalar features have bounded ranges, allowing a durable default that can be
@@ -114,23 +116,30 @@ PHASE_WEIGHTS: dict[GamePhase, dict[str, float]] = {
 
 
 def _load_weight_overrides() -> None:
-    """Retain compatibility with the existing heuristic checkpoints."""
+    """Load only explicitly versioned tactical weights.
+
+    The old weights.json used a different feature schema (W_VORONOI,
+    W_CONSTRICT, etc.). Silently mixing it with this engine had zeroed most
+    of the live food/hazard features. Keep the legacy artifact for its
+    historical trainer, but never apply it to the v13 tactical policy.
+    """
     import json
 
-    path = Path(__file__).with_name("weights.json")
+    path = Path(__file__).with_name("tactical_weights.json")
     if not path.is_file():
         return
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if raw.get("schema") != "tactical-v13" or not isinstance(raw.get("phases"), dict):
+            raise ValueError("expected schema=tactical-v13 with a phases object")
         for phase in GamePhase:
-            overrides = raw.get(phase.value)
+            overrides = raw["phases"].get(phase.value)
             if isinstance(overrides, dict):
-                # Ignore legacy keys rather than failing at server start.
                 for key, value in overrides.items():
-                    if key in PHASE_WEIGHTS[phase] and isinstance(value, (int, float)):
+                    if key in PHASE_WEIGHTS[phase] and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 500:
                         PHASE_WEIGHTS[phase][key] = float(value)
-    except Exception as exc:  # pragma: no cover - defensive server startup path
-        log.warning("Could not load weights.json: %s", exc)
+    except (OSError, ValueError, TypeError) as exc:
+        log.warning("Ignoring incompatible tactical_weights.json: %s", exc)
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -303,14 +312,15 @@ class TacticalEngine:
         our_length = _as_int(you.get("length"), len(our_body) or 1)
         our_tail = our_body[-1] if our_body else None
         occupied = cls._board_walls(width, height)
-        cls._add_body(occupied, our_body)
+        mode = game_mode(data)
+        cls._add_body(occupied, our_body, retain_tail=is_constrictor(mode))
         enemies: list[dict[str, Any]] = []
         you_id = you.get("id")
         for snake in board.get("snakes", []):
             if snake.get("id") == you_id:
                 continue
             body = [point for point in (_pt(segment) for segment in snake.get("body", [])) if point is not None]
-            cls._add_body(occupied, body)
+            cls._add_body(occupied, body, retain_tail=is_constrictor(mode))
             head = _pt(snake.get("head")) or (body[0] if body else None)
             if head:
                 enemies.append({"id": snake.get("id", "enemy"), "head_pos": head, "length": _as_int(snake.get("length"), len(body) or 1), "health": _as_int(snake.get("health"), 100), "body": body})
@@ -348,7 +358,7 @@ class TacticalEngine:
             our_head=our_head, our_body=our_body, our_len=our_length, our_health=_as_int(you.get("health"), 100), our_tail=our_tail,
             width=width, height=height, turn=turn, occupied=occupied, hazard_set=hazards, hazard_dmg=_get_hazard_dmg(data),
             enemy_data=enemies, visible_food=visible_food, merged_food=set(merged_food), phase=phase, weights=PHASE_WEIGHTS[phase],
-            deadline=deadline, ghost_zones=ghost_zones, unseen_cells=unseen,
+            deadline=deadline, ghost_zones=ghost_zones, unseen_cells=unseen, game_mode=mode,
         )
 
     @staticmethod
@@ -358,31 +368,32 @@ class TacticalEngine:
         return walls
 
     @staticmethod
-    def _add_body(occupied: set[tuple[int, int]], body: list[tuple[int, int]]) -> None:
-        """Add a body while allowing an unstacked tail to vacate this turn.
+    def _add_body(occupied: set[tuple[int, int]], body: list[tuple[int, int]], retain_tail: bool = False) -> None:
+        """Mark currently blocking body cells.
 
-        A duplicated final coordinate is the rules-engine signal that the tail
-        did not move during the prior food turn, so it remains blocked now.
+        Normal, unstacked tails vacate; Constrictor tails never vacate.
+        A duplicated tail remains blocked even in standard mode.
         """
         if not body:
             return
         occupied.update(body[:-1])
-        if len(body) == 1 or (len(body) >= 2 and body[-1] == body[-2]):
+        if retain_tail or len(body) == 1 or (len(body) >= 2 and body[-1] == body[-2]):
             occupied.add(body[-1])
 
     @classmethod
     def _is_certain_death(cls, candidate: tuple[int, int], ctx: GameContext) -> bool:
         if candidate in ctx.occupied:
             return True
-        if candidate in ctx.hazard_set and ctx.our_health - 1 - ctx.hazard_dmg <= 0:
-            return True
-        # All moves resolve simultaneously.  A same-destination H2H against an
-        # equal/longer opponent is a certain loss (or mutual elimination).
-        for enemy in ctx.enemy_data:
-            head = enemy["head_pos"]
-            if _manhattan(candidate, head) == 1 and int(enemy["length"]) >= ctx.our_len:
-                return True
-        return False
+        # Food is resolved before starvation and hazard elimination. A move
+        # onto visible food can rescue a snake with 1 health, even in a hazard.
+        if is_constrictor(ctx.game_mode) or candidate in ctx.visible_food:
+            return False
+        return ctx.our_health - 1 - (ctx.hazard_dmg if candidate in ctx.hazard_set else 0) <= 0
+
+    @classmethod
+    def _head_risk(cls, candidate: tuple[int, int], ctx: GameContext) -> int:
+        return head_to_head_risk(candidate, ctx.enemy_data, ctx.occupied,
+                                 ctx.our_len, ctx.width, ctx.height, ctx.game_mode)
 
     @classmethod
     def _is_corridor_trap(cls, candidate: tuple[int, int], ctx: GameContext) -> bool:
@@ -391,32 +402,18 @@ class TacticalEngine:
 
     @classmethod
     def _deep_escape_check(cls, candidate: tuple[int, int], ctx: GameContext, depth: int = ESCAPE_DEPTH) -> bool:
-        """Cheap tail-release forecast; conservative only when time remains."""
-        required = min(ctx.width * ctx.height, ctx.our_len + ESCAPE_MARGIN + (1 if candidate in ctx.merged_food else 0))
-        for future_turn in range(1, depth + 1):
-            if time.monotonic() >= ctx.deadline - 0.015:
-                return True  # deadline safety: retain the already-checked move
-            blocked = cls._board_walls(ctx.width, ctx.height)
-            cls._add_future_body(blocked, ctx.our_body, future_turn, candidate in ctx.merged_food)
-            for enemy in ctx.enemy_data:
-                cls._add_future_body(blocked, enemy["body"], future_turn, False)
-            if cls._flood_fill(candidate, blocked, required, ctx.deadline) < required:
-                return False
-        return True
-
-    @staticmethod
-    def _add_future_body(blocked: set[tuple[int, int]], body: list[tuple[int, int]], turns: int, eating_now: bool) -> None:
-        if not body:
-            return
-        releases = max(0, turns - (1 if eating_now else 0))
-        keep = max(0, len(body) - releases)
-        blocked.update(body[:keep])
+        # Unlike a static flood fill, track our own body/tail movement exactly.
+        return survive_horizon(candidate, ctx, depth=depth)
 
     @classmethod
     def _is_safe(cls, candidate: tuple[int, int], ctx: GameContext) -> bool:
         if cls._is_certain_death(candidate, ctx):
             return False
-        if candidate in ctx.hazard_set and ctx.our_health <= HAZARD_SOFT_HEALTH + ctx.hazard_dmg:
+        # This is a *possible* simultaneous head collision, not certain death.
+        # Keep the move in the relaxed pool when every alternative is worse.
+        if cls._head_risk(candidate, ctx) == 2:
+            return False
+        if candidate in ctx.hazard_set and candidate not in ctx.visible_food and ctx.our_health <= HAZARD_SOFT_HEALTH + ctx.hazard_dmg and not is_constrictor(ctx.game_mode):
             return False
         return not cls._is_corridor_trap(candidate, ctx) and cls._deep_escape_check(candidate, ctx)
 
@@ -507,23 +504,41 @@ class TacticalEngine:
     @classmethod
     def _score_move(cls, candidate: tuple[int, int], ctx: GameContext) -> float:
         weights = ctx.weights
-        if ctx.our_health <= HUNGER_CRITICAL:
-            distance = cls._bfs_dist(candidate, ctx.visible_food or ctx.merged_food, ctx.occupied, limit=ctx.width * ctx.height)
-            # Survival remains guaranteed by the caller, but starvation has an
-            # intentionally lexicographic priority across the remaining moves.
-            return -10000.0 * distance + cls._flood_fill(candidate, ctx.occupied, ctx.our_len + ESCAPE_MARGIN, ctx.deadline)
+        growing = is_constrictor(ctx.game_mode)
+        risky_head = cls._head_risk(candidate, ctx)
+        food = ctx.visible_food or ctx.merged_food
+        # These are tactical preferences only; no food can ever override a
+        # known fatal move in the safety layer.
+        health_after = 100 if growing or candidate in ctx.visible_food else (
+            ctx.our_health - 1 - (ctx.hazard_dmg if candidate in ctx.hazard_set else 0)
+        )
+        if ctx.our_health <= HUNGER_CRITICAL and not growing and food:
+            distance = safe_food_distance(candidate, food, ctx.occupied, ctx.hazard_set,
+                                          health_after, ctx.hazard_dmg, ctx.width,
+                                          ctx.height, ctx.game_mode)
+            return (-10000.0 * (distance if distance is not None else 999)
+                    + cls._flood_fill(candidate, ctx.occupied, ctx.our_len + ESCAPE_MARGIN, ctx.deadline)
+                    - (100000.0 if risky_head == 2 else 0.0))
 
         area = cls._flood_fill(candidate, ctx.occupied, ctx.width * ctx.height, ctx.deadline)
         score = area * weights["W_SPACE"]
         score += cls._territory(candidate, ctx) * weights["W_TERRITORY"]
-        food_distance = cls._bfs_dist(candidate, ctx.merged_food, ctx.occupied, limit=ctx.width * ctx.height)
-        if food_distance < 999:
-            score -= food_distance * weights["W_FOOD"]
-            score += cls._food_race_score(candidate, ctx)
+        if not growing and food:
+            distance = safe_food_distance(candidate, food, ctx.occupied, ctx.hazard_set,
+                                          health_after, ctx.hazard_dmg, ctx.width,
+                                          ctx.height, ctx.game_mode)
+            if distance is not None:
+                # Avoid the old failure where a snake at 30-60 health ignores
+                # food until it is already on the brink of starvation.
+                urgency = 1.0 + max(0, 65 - ctx.our_health) / 15.0
+                score -= distance * weights["W_FOOD"] * urgency
+                score += cls._food_race_score(candidate, ctx)
+            elif ctx.our_health < 60:
+                score -= weights["W_FOOD"] * 20.0
         for enemy in ctx.enemy_data:
             if int(enemy["length"]) < ctx.our_len and _manhattan(candidate, enemy["head_pos"]) == 1:
                 score += weights["W_KILL"]
-        if ctx.our_tail:
+        if ctx.our_tail and not growing:
             tail_distance = cls._bfs_dist(candidate, {ctx.our_tail}, ctx.occupied, limit=ctx.width * ctx.height)
             if tail_distance < 999:
                 score += max(0, 16 - tail_distance) * weights["W_TAIL"]
@@ -531,13 +546,14 @@ class TacticalEngine:
         score -= _manhattan(candidate, center) * weights["W_CENTER"]
         if candidate[0] in (0, ctx.width - 1) or candidate[1] in (0, ctx.height - 1):
             score -= weights["W_EDGE"]
-        if candidate in ctx.hazard_set:
-            projected_health = ctx.our_health - 1 - ctx.hazard_dmg
-            score -= weights["W_HAZARD"] * (1.0 + max(0, 40 - projected_health) / 40.0)
+        if candidate in ctx.hazard_set and candidate not in ctx.visible_food and not growing:
+            score -= weights["W_HAZARD"] * (1.0 + max(0, 40 - health_after) / 40.0)
         if candidate in ctx.ghost_zones:
             score -= weights["W_GHOST"]
         if candidate in ctx.unseen_cells:
             score -= weights["W_FOG"]
+        if risky_head == 2:
+            score -= 100000.0
         return score
 
     @classmethod
@@ -550,9 +566,8 @@ class TacticalEngine:
                 penalty += 10000.0
             if candidate in ctx.hazard_set:
                 penalty += 2000.0 if ctx.our_health - 1 - ctx.hazard_dmg <= 0 else 50.0
-            for enemy in ctx.enemy_data:
-                if _manhattan(candidate, enemy["head_pos"]) == 1 and int(enemy["length"]) >= ctx.our_len:
-                    penalty += 600.0
+            if cls._head_risk(candidate, ctx) == 2:
+                penalty += 600.0
             area = cls._flood_fill(candidate, ctx.occupied, ctx.our_len + CORRIDOR_MARGIN, ctx.deadline)
             ranked.append((penalty - area, direction))
         return min(ranked)[1]

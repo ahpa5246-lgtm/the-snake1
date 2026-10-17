@@ -53,7 +53,10 @@ class CompetitiveEngineTests(unittest.TestCase):
         enemy = {"id": "enemy", "health": 90, "length": 3, "head": {"x": 7, "y": 5}, "body": [{"x": 7, "y": 5}, {"x": 7, "y": 4}, {"x": 7, "y": 3}]}
         raw = materialize(state(body=[{"x": 5, "y": 5}, {"x": 5, "y": 4}, {"x": 5, "y": 3}], enemies=[enemy]))
         context = main.TacticalEngine._build_context(raw, set(), "g", float("inf"))
-        self.assertTrue(main.TacticalEngine._is_certain_death((6, 5), context))
+        # Simultaneous head-to-head is a possible loss, not an inevitable one.
+        self.assertFalse(main.TacticalEngine._is_certain_death((6, 5), context))
+        self.assertEqual(main.TacticalEngine._head_risk((6, 5), context), 2)
+        self.assertFalse(main.TacticalEngine._is_safe((6, 5), context))
 
     def test_terminal_death_reward_is_exact(self):
         before = materialize(state(body=[{"x": 5, "y": 5}], health=10))
