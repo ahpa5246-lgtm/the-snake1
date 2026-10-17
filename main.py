@@ -52,7 +52,7 @@ FOOD_STALE_TTL = 18
 HUNGER_CRITICAL = 28
 HAZARD_SOFT_HEALTH = 30
 CORRIDOR_MARGIN = 2
-ESCAPE_DEPTH = 3
+ESCAPE_DEPTH = 5
 ESCAPE_MARGIN = 2
 
 _game_memory: dict[str, dict[str, Any]] = {}
@@ -401,7 +401,7 @@ class TacticalEngine:
         return cls._flood_fill(candidate, ctx.occupied, required, ctx.deadline) < required
 
     @classmethod
-    def _deep_escape_check(cls, candidate: tuple[int, int], ctx: GameContext, depth: int = 5) -> bool:
+    def _deep_escape_check(cls, candidate: tuple[int, int], ctx: GameContext, depth: int = ESCAPE_DEPTH) -> bool:
         # Unlike a static flood fill, track our own body/tail movement exactly.
         return survive_horizon(candidate, ctx, depth=depth)
 
@@ -538,7 +538,7 @@ class TacticalEngine:
         for enemy in ctx.enemy_data:
             if int(enemy["length"]) < ctx.our_len and _manhattan(candidate, enemy["head_pos"]) == 1:
                 score += weights["W_KILL"]
-        if ctx.our_tail:
+        if ctx.our_tail and not growing:
             tail_distance = cls._bfs_dist(candidate, {ctx.our_tail}, ctx.occupied, limit=ctx.width * ctx.height)
             if tail_distance < 999:
                 score += max(0, 16 - tail_distance) * weights["W_TAIL"]
