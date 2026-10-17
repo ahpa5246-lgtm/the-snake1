@@ -1,0 +1,38 @@
+name: Tactical Strategy CI
+
+on:
+  pull_request:
+    paths:
+      - "main.py"
+      - "strategy_search.py"
+      - "tests/test_main.py"
+      - "tests/test_competitive_engine.py"
+      - "tests/test_strategy_search.py"
+      - ".github/workflows/strategy-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "main.py"
+      - "strategy_search.py"
+      - "tests/**"
+      - ".github/workflows/strategy-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  tactical-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight test dependencies
+        run: python -m pip install fastapi pydantic pytest
+      - name: Compile
+        run: python -m compileall -q main.py strategy_search.py tests
+      - name: Tactical rules and endpoint regressions
+        run: python -m pytest -q tests/test_main.py tests/test_competitive_engine.py tests/test_strategy_search.py
