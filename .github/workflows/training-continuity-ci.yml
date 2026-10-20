@@ -177,6 +177,7 @@ jobs:
           env = hisss.BattleSnakeGame(_fixed_scenario(hisss, 7103))
           raw = json.loads(hisss.to_battlesnake_json(env, 0))
           print("board", raw["board"]["width"], raw["board"]["height"], "food", len(raw["board"]["food"]))
+          print("heads", [snake.get("head") for snake in raw["board"]["snakes"]])
           profile = cProfile.Profile()
           agent = _DeployedPolicyAgent(model, meta.board_size, "profile")
           print("move", profile.runcall(agent.choose, raw))

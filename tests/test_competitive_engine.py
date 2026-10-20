@@ -188,3 +188,40 @@ class DeploymentParityTests(unittest.TestCase):
         )
         self.assertFalse(result["gate"]["passed"])
         self.assertIn("decision_budget_exceeded", result["gate"]["blockers"])
+
+    def test_hidden_negative_coordinates_are_not_real_board_positions(self):
+        self.assertIsNone(main._pt({"x": -1, "y": -1}))
+
+    def test_hidden_enemy_heads_are_excluded_from_geometric_pathfinding(self):
+        hidden = {"id": "hidden", "health": 100, "length": 3,
+                  "head": {"x": -1, "y": -1},
+                  "body": [{"x": -1, "y": -1}] * 3}
+        raw = materialize(state(
+            body=[{"x": 2, "y": 2}, {"x": 2, "y": 1}, {"x": 2, "y": 0}],
+            enemies=[hidden], food=[{"x": 7, "y": 7}], width=15, height=15,
+        ))
+        context = main.TacticalEngine._build_context(raw, {(7, 7)}, "hidden", float("inf"))
+        self.assertEqual(context.enemy_data, [])
+
+    def test_food_race_on_partial_board_stays_inside_the_live_budget(self):
+        hidden = [{"id": f"hidden-{i}", "health": 100, "length": 3,
+                   "head": {"x": -1, "y": -1},
+                   "body": [{"x": -1, "y": -1}] * 3} for i in range(3)]
+        raw = materialize(state(
+            body=[{"x": 2, "y": 2}, {"x": 2, "y": 1}, {"x": 2, "y": 0}],
+            enemies=hidden, food=[{"x": 7, "y": 7}], width=15, height=15,
+        ))
+        started = time.monotonic()
+        response = main.on_move(main.GameState.model_validate(raw))
+        self.assertIn(json.loads(response.body)["move"], main.TacticalEngine.DIRECTIONS)
+        self.assertLess(time.monotonic() - started, main.COMPUTE_BUDGET_S + 0.05)
+
+    def test_bounded_bfs_rejects_an_outside_start(self):
+        try:
+            distance = main.TacticalEngine._bfs_dist(
+                (-1, -1), {(7, 7)}, set(), width=15, height=15,
+                deadline=time.monotonic() + 0.01,
+            )
+        except TypeError:
+            self.fail("Distance search has no explicit board or deadline boundary")
+        self.assertEqual(distance, 999)
