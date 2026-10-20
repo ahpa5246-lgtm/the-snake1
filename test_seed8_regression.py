@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import sys
 import random
+import json
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 MIN_SURVIVAL_TURN = 30
@@ -102,7 +103,7 @@ def test_no_self_inflicted_death_before_turn_30_multiseed():
             if d["cause"] == "body-collision" and d["turn"] < MIN_SURVIVAL_TURN:
                 bad.append((seed, d["turn"], d))
 
-    assert not bad, f"Self-inflicted early deaths found (seed, turn): {bad}"
+    assert not bad, "COLLISION_WITNESS " + json.dumps(bad, ensure_ascii=False)
 
 def test_latency_budget():
     from agent_adapter import move_latency_ms

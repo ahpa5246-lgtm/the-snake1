@@ -275,6 +275,7 @@ def _run_standalone_game(
     deaths: list[dict] = []
     hazard_deaths = 0
     hazard_dmg_total = 0
+    recent_moves = {}
     turn = 0
 
     while True:
@@ -308,6 +309,11 @@ def _run_standalone_game(
             except Exception:
                 moves[i] = random.choice(list(DIRS.keys()))
 
+        for i in alive:
+            trace = recent_moves.setdefault(i, [])
+            trace.append({"state": _mk_state(game_id, turn, snakes, food, i), "move": moves[i]})
+            del trace[:-3]
+
         # Compute new heads
         new_heads: dict[int, tuple[int, int]] = {
             i: (snakes[i].head[0] + DIRS[moves[i]][0],
@@ -338,7 +344,8 @@ def _run_standalone_game(
                                "snake_id": snakes[i].id,
                                "collision_owners": [snake_id for snake_id, cells in collision_sources.items() if new_heads[i] in cells],
                                "collision_position": list(new_heads[i]),
-                               "own_body": [list(point) for point in snakes[i].body]})
+                               "own_body": [list(point) for point in snakes[i].body],
+                               "recent_moves": recent_moves.get(i, [])})
                 if verbose:
                     print(f"    [{snakes[i].name}] died turn {turn}: body collision")
 
