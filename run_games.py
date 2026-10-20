@@ -385,9 +385,10 @@ def _run_standalone_game(
         for i in alive:
             ate = new_heads[i] in food
             snakes[i].body.insert(0, new_heads[i])
-            if not ate:
-                snakes[i].body.pop()
-            else:
+            # Every move removes the old tail before food adds one segment.
+            # Retaining it here as well as duplicating below grew by two.
+            snakes[i].body.pop()
+            if ate:
                 snakes[i].health = START_HEALTH
                 # Duplicate tail segment — matches real server behaviour so
                 # that _build_occupied_sim can detect "just ate" via
