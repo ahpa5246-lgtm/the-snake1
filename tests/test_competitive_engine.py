@@ -82,3 +82,75 @@ def main_reward(before, after, *, alive, won):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeploymentParityTests(unittest.TestCase):
+    def setUp(self):
+        main._game_memory.clear()
+        self.raw = materialize(state(
+            body=[{"x": 5, "y": 5}, {"x": 5, "y": 4}, {"x": 5, "y": 3}],
+            food=[{"x": 6, "y": 5}], turn=20,
+        ))
+
+    def test_tactical_policy_accepts_an_isolated_frozen_adviser(self):
+        class Advisor:
+            @staticmethod
+            def scores(raw, legal, deadline):
+                return {direction: (20.0 if direction == "left" else 0.0) for direction in legal}
+
+        try:
+            direction = main.TacticalEngine.get_best_move(
+                self.raw, {(6, 5)}, "isolated", time.monotonic() + main.COMPUTE_BUDGET_S,
+                advisor=Advisor,
+            )
+        except TypeError:
+            self.fail("The deployed engine cannot evaluate isolated candidate/baseline advisers")
+        self.assertIn(direction, main.TacticalEngine.DIRECTIONS)
+
+    def test_frozen_adviser_still_cannot_bypass_immediate_death_filter(self):
+        raw = materialize(state(
+            body=[{"x": 0, "y": 5}, {"x": 0, "y": 4}, {"x": 0, "y": 3}],
+        ))
+
+        class Advisor:
+            @staticmethod
+            def scores(raw, legal, deadline):
+                return {direction: 1e6 for direction in legal}
+
+        try:
+            direction = main.TacticalEngine.get_best_move(
+                raw, set(), "safety", time.monotonic() + main.COMPUTE_BUDGET_S, advisor=Advisor,
+            )
+        except TypeError:
+            self.fail("Frozen adviser evaluation is unavailable")
+        self.assertNotEqual(direction, "left")
+        self.assertNotEqual(direction, "down")
+
+    def test_evaluator_uses_the_same_tactical_neural_policy_as_move_endpoint(self):
+        from unittest.mock import patch
+        from training import evaluate_candidate as evaluation
+        agent_type = getattr(evaluation, "_DeployedPolicyAgent", None)
+        self.assertIsNotNone(agent_type, "Evaluation currently measures a different policy from production")
+        agent = agent_type(None, 25, "evaluation")
+
+        class Advisor:
+            @staticmethod
+            def scores(raw, legal, deadline):
+                return {direction: (30.0 if direction == "left" else -1.0) for direction in legal}
+
+        agent.advisor = Advisor
+        with patch.object(main.NeuralAdvisor, "scores", side_effect=Advisor.scores):
+            production = json.loads(main.on_move(main.GameState.model_validate(self.raw)).body)["move"]
+        self.assertEqual(agent.choose(self.raw), production)
+
+    def test_candidate_and_baseline_advisers_do_not_share_model_state(self):
+        from training import evaluate_candidate as evaluation
+        agent_type = getattr(evaluation, "_DeployedPolicyAgent", None)
+        self.assertIsNotNone(agent_type, "No production-policy evaluation adapter exists")
+        original = main.NeuralAdvisor._model
+        candidate_model, baseline_model = object(), object()
+        candidate = agent_type(candidate_model, 25, "candidate")
+        baseline = agent_type(baseline_model, 25, "baseline")
+        self.assertIs(candidate.advisor._model, candidate_model)
+        self.assertIs(baseline.advisor._model, baseline_model)
+        self.assertIs(main.NeuralAdvisor._model, original)
