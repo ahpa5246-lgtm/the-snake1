@@ -333,7 +333,11 @@ def _run_standalone_game(
         for i in alive:
             if new_heads[i] in body_cells:
                 snakes[i].alive = False
-                deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "body-collision", "length": snakes[i].length})
+                deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "body-collision", "length": snakes[i].length,
+                               "snake_id": snakes[i].id,
+                               "collision_owners": [s.id for s in alive_snakes if new_heads[i] in _build_occupied_sim([s], new_heads)],
+                               "collision_position": list(new_heads[i]),
+                               "own_body": [list(point) for point in snakes[i].body]})
                 if verbose:
                     print(f"    [{snakes[i].name}] died turn {turn}: body collision")
 

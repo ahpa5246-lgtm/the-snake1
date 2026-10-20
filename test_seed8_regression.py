@@ -100,7 +100,7 @@ def test_no_self_inflicted_death_before_turn_30_multiseed():
         
         for d in death_events:
             if d["cause"] == "body-collision" and d["turn"] < MIN_SURVIVAL_TURN:
-                bad.append((seed, d["turn"]))
+                bad.append((seed, d["turn"], d))
 
     assert not bad, f"Self-inflicted early deaths found (seed, turn): {bad}"
 
