@@ -320,15 +320,20 @@ class TacticalEngine:
         mode = game_mode(data)
         cls._add_body(occupied, our_body, retain_tail=is_constrictor(mode))
         enemies: list[dict[str, Any]] = []
+        enemy_count = 0
         you_id = you.get("id")
         for snake in board.get("snakes", []):
             if snake.get("id") == you_id:
                 continue
-            body = [point for point in (_pt(segment) for segment in snake.get("body", [])) if point is not None]
-            cls._add_body(occupied, body, retain_tail=is_constrictor(mode))
-            head = _pt(snake.get("head")) or (body[0] if body else None)
+            enemy_count += 1
+            # Keep original segment slots when identifying head and tail.
+            # Compacting visible cells could turn a neck into a vacating tail.
+            cells = [_pt(segment) for segment in snake.get("body", [])]
+            cls._add_body(occupied, cells, retain_tail=is_constrictor(mode))
+            body = [point for point in cells if point is not None]
+            head = _pt(snake.get("head")) or (cells[0] if cells else None)
             if head and 0 <= head[0] < width and 0 <= head[1] < height:
-                enemies.append({"id": snake.get("id", "enemy"), "head_pos": head, "length": _as_int(snake.get("length"), len(body) or 1), "health": _as_int(snake.get("health"), 100), "body": body})
+                enemies.append({"id": snake.get("id", "enemy"), "head_pos": head, "length": _as_int(snake.get("length"), len(cells) or 1), "health": _as_int(snake.get("health"), 100), "body": body})
 
         hazards = {point for point in (_pt(item) for item in board.get("hazards", [])) if point is not None}
         visible_food = {point for point in (_pt(item) for item in board.get("food", [])) if point is not None}
@@ -353,7 +358,7 @@ class TacticalEngine:
         turn = _as_int(data.get("turn"), 0)
         if turn < 16:
             phase = GamePhase.EARLY
-        elif len(enemies) == 1:
+        elif enemy_count == 1:
             phase = GamePhase.LATE_1V1
         elif turn >= 55:
             phase = GamePhase.LATE_FFA
@@ -373,7 +378,7 @@ class TacticalEngine:
         return walls
 
     @staticmethod
-    def _add_body(occupied: set[tuple[int, int]], body: list[tuple[int, int]], retain_tail: bool = False) -> None:
+    def _add_body(occupied: set[tuple[int, int]], body: list[tuple[int, int] | None], retain_tail: bool = False) -> None:
         """Mark currently blocking body cells.
 
         Normal, unstacked tails vacate; Constrictor tails never vacate.
@@ -381,9 +386,10 @@ class TacticalEngine:
         """
         if not body:
             return
-        occupied.update(body[:-1])
-        if retain_tail or len(body) == 1 or (len(body) >= 2 and body[-1] == body[-2]):
-            occupied.add(body[-1])
+        occupied.update(point for point in body[:-1] if point is not None)
+        tail = body[-1]
+        if tail is not None and (retain_tail or len(body) == 1 or (len(body) >= 2 and tail == body[-2])):
+            occupied.add(tail)
 
     @classmethod
     def _is_certain_death(cls, candidate: tuple[int, int], ctx: GameContext) -> bool:
