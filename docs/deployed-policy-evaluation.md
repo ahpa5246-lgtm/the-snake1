@@ -13,3 +13,13 @@ Run against your own separately frozen files:
 ```bash
 python training/evaluate_candidate.py --baseline PRIVATE-baseline.pt --candidate PRIVATE-candidate.pt --output PRIVATE-report.json --training-seed 2026
 ```
+
+## Measured failure and first controlled result (2026-10-20)
+
+A real Hisss 15x15 observation contained three hidden enemy heads at `(-1, -1)`. The previous point parser accepted them. Food-race searches started outside the board's wall ring and explored an exterior grid: cProfile recorded about 909,000 queue pops and 2.479 seconds for one decision. A separate endpoint regression took about 0.918 seconds against the declared 200ms budget.
+
+The repair excludes hidden coordinates from geometry and bounds internal distance searches by board dimensions and deadline. On the same fixture, CI measured about 13.16ms under cProfile, with one successful neural inference. These are fixture-specific observations from CI runners, not a universal latency guarantee.
+
+At implementation commit `99df97bdc7cfc81409da7e49d90ef223e6974204`, four real training games and one PPO update produced a distinct frozen candidate. The sixteen held-out mirrored games returned 7 candidate wins, 8 losses and 1 draw (score 0.46875), with zero candidate invalid directions or budget overruns. The gate rejected the candidate and retained the baseline. This small experiment does not establish general playing strength or superiority of an agent framework.
+
+Evidence: [CI experiment and profiler](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39486127410); [pre-fix profile](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39485875449). No checkpoint was promoted or deployed.

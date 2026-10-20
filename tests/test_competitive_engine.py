@@ -248,3 +248,17 @@ class DeploymentParityTests(unittest.TestCase):
         context = main.TacticalEngine._build_context(raw, set(), "partial-head", float("inf"))
         self.assertEqual(context.enemy_data, [])
         self.assertIn((7, 5), context.occupied)
+
+    def test_game_phase_uses_known_opponent_count_not_only_visible_heads(self):
+        known = {"id": "visible", "health": 100, "length": 3,
+                 "head": {"x": 8, "y": 8},
+                 "body": [{"x": 8, "y": 8}, {"x": 8, "y": 7}, {"x": 8, "y": 6}]}
+        hidden = [{"id": f"hidden-{i}", "health": 100, "length": 3,
+                   "head": {"x": -1, "y": -1},
+                   "body": [{"x": -1, "y": -1}] * 3} for i in range(2)]
+        raw = materialize(state(
+            body=[{"x": 5, "y": 5}, {"x": 5, "y": 4}, {"x": 5, "y": 3}],
+            enemies=[known, *hidden], turn=20,
+        ))
+        context = main.TacticalEngine._build_context(raw, set(), "known-count", float("inf"))
+        self.assertEqual(context.phase, main.GamePhase.MID)
