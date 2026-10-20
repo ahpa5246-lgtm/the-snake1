@@ -150,9 +150,14 @@ def _as_int(value: Any, default: int) -> int:
 
 
 def _pt(segment: Any) -> tuple[int, int] | None:
-    if not isinstance(segment, dict) or segment.get("x") is None or segment.get("y") is None:
+    if not isinstance(segment, dict):
         return None
-    return _as_int(segment["x"], 0), _as_int(segment["y"], 0)
+    x, y = segment.get("x"), segment.get("y")
+    # Blackout represents hidden segments with negative placeholders. They
+    # are unknown positions, never real cells outside the board.
+    if type(x) is not int or type(y) is not int or x < 0 or y < 0:
+        return None
+    return x, y
 
 
 def _manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
@@ -322,7 +327,7 @@ class TacticalEngine:
             body = [point for point in (_pt(segment) for segment in snake.get("body", [])) if point is not None]
             cls._add_body(occupied, body, retain_tail=is_constrictor(mode))
             head = _pt(snake.get("head")) or (body[0] if body else None)
-            if head:
+            if head and 0 <= head[0] < width and 0 <= head[1] < height:
                 enemies.append({"id": snake.get("id", "enemy"), "head_pos": head, "length": _as_int(snake.get("length"), len(body) or 1), "health": _as_int(snake.get("health"), 100), "body": body})
 
         hazards = {point for point in (_pt(item) for item in board.get("hazards", [])) if point is not None}
@@ -435,18 +440,27 @@ class TacticalEngine:
         return count
 
     @classmethod
-    def _bfs_dist(cls, start: tuple[int, int], targets: set[tuple[int, int]], occupied: set[tuple[int, int]], limit: int = 100) -> int:
-        if not targets:
+    def _bfs_dist(cls, start: tuple[int, int], targets: set[tuple[int, int]], occupied: set[tuple[int, int]], limit: int = 100, *, width: int | None = None, height: int | None = None, deadline: float = float("inf")) -> int:
+        bounded = width is not None and height is not None
+
+        def inside(point):
+            return not bounded or (0 <= point[0] < width and 0 <= point[1] < height)
+
+        if not targets or not inside(start):
             return 999
         if start in targets:
             return 0
         queue, seen = deque([(start, 0)]), {start}
         while queue:
+            if time.monotonic() >= deadline - 0.004:
+                return 999
             position, distance = queue.popleft()
             if distance >= limit:
                 continue
             for dx, dy in cls.DIRECTIONS.values():
                 nxt = position[0] + dx, position[1] + dy
+                if not inside(nxt):
+                    continue
                 if nxt in targets:
                     return distance + 1
                 if nxt not in occupied and nxt not in seen:
@@ -484,13 +498,13 @@ class TacticalEngine:
     def _food_race_score(cls, candidate: tuple[int, int], ctx: GameContext) -> float:
         if not ctx.merged_food:
             return 0.0
-        our_distance = cls._bfs_dist(candidate, ctx.merged_food, ctx.occupied, limit=ctx.width * ctx.height)
+        our_distance = cls._bfs_dist(candidate, ctx.merged_food, ctx.occupied, limit=ctx.width * ctx.height, width=ctx.width, height=ctx.height, deadline=ctx.deadline)
         if our_distance >= 999:
             return -ctx.weights["W_RACE"]
         target = min(ctx.merged_food, key=lambda food: _manhattan(candidate, food))
         closest_enemy, enemy_length = 999, 0
         for enemy in ctx.enemy_data:
-            distance = cls._bfs_dist(enemy["head_pos"], {target}, ctx.occupied, limit=ctx.width * ctx.height)
+            distance = cls._bfs_dist(enemy["head_pos"], {target}, ctx.occupied, limit=ctx.width * ctx.height, width=ctx.width, height=ctx.height, deadline=ctx.deadline)
             if distance < closest_enemy:
                 closest_enemy, enemy_length = distance, int(enemy["length"])
         if our_distance < closest_enemy:
@@ -539,7 +553,7 @@ class TacticalEngine:
             if int(enemy["length"]) < ctx.our_len and _manhattan(candidate, enemy["head_pos"]) == 1:
                 score += weights["W_KILL"]
         if ctx.our_tail and not growing:
-            tail_distance = cls._bfs_dist(candidate, {ctx.our_tail}, ctx.occupied, limit=ctx.width * ctx.height)
+            tail_distance = cls._bfs_dist(candidate, {ctx.our_tail}, ctx.occupied, limit=ctx.width * ctx.height, width=ctx.width, height=ctx.height, deadline=ctx.deadline)
             if tail_distance < 999:
                 score += max(0, 16 - tail_distance) * weights["W_TAIL"]
         center = ((ctx.width - 1) // 2, (ctx.height - 1) // 2)

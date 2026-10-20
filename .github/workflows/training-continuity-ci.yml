@@ -94,6 +94,27 @@ jobs:
             requirements-training.txt
       - name: Install CPU evaluation dependencies
         run: python -m pip install -r requirements-training.txt
+      - name: Profile one real-engine deployed decision
+        run: |
+          python - <<'PY'
+          import cProfile, json, pstats
+          import hisss, torch
+          from neural_policy import load_checkpoint
+          from training.evaluate_candidate import _fixed_scenario, _DeployedPolicyAgent
+          torch.set_num_threads(1)
+          model, meta, _ = load_checkpoint("training/checkpoints/neural/champion.pt")
+          env = hisss.BattleSnakeGame(_fixed_scenario(hisss, 7103))
+          raw = json.loads(hisss.to_battlesnake_json(env, 0))
+          print("board", raw["board"]["width"], raw["board"]["height"], "food", len(raw["board"]["food"]))
+          print("heads", [snake.get("head") for snake in raw["board"]["snakes"]])
+          profile = cProfile.Profile()
+          agent = _DeployedPolicyAgent(model, meta.board_size, "profile")
+          print("move", profile.runcall(agent.choose, raw))
+          print("decision_ms", agent.total_latency_ms, "neural_inferences", agent.neural_inferences)
+          assert agent.total_latency_ms < 200 and agent.neural_inferences > 0
+          pstats.Stats(profile).sort_stats("cumulative").print_stats(18)
+          PY
+
       - name: Freeze baseline and perform one bounded PPO update
         run: |
           timeout 120s python - <<'PY'
@@ -152,34 +173,3 @@ jobs:
           path: |
             /tmp/deployed-policy-experiment/report.json
             /tmp/deployed-policy-experiment/training.json
-
-  decision-profile:
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    env:
-      OMP_NUM_THREADS: '1'
-      MKL_NUM_THREADS: '1'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m pip install -r requirements-training.txt
-      - name: Profile one real-engine deployed decision
-        run: |
-          python - <<'PY'
-          import cProfile, json, pstats
-          import hisss, torch
-          from neural_policy import load_checkpoint
-          from training.evaluate_candidate import _fixed_scenario, _DeployedPolicyAgent
-          torch.set_num_threads(1)
-          model, meta, _ = load_checkpoint("training/checkpoints/neural/champion.pt")
-          env = hisss.BattleSnakeGame(_fixed_scenario(hisss, 7103))
-          raw = json.loads(hisss.to_battlesnake_json(env, 0))
-          print("board", raw["board"]["width"], raw["board"]["height"], "food", len(raw["board"]["food"]))
-          print("heads", [snake.get("head") for snake in raw["board"]["snakes"]])
-          profile = cProfile.Profile()
-          agent = _DeployedPolicyAgent(model, meta.board_size, "profile")
-          print("move", profile.runcall(agent.choose, raw))
-          pstats.Stats(profile).sort_stats("cumulative").print_stats(18)
-          PY
