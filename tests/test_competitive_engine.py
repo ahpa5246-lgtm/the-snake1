@@ -225,3 +225,26 @@ class DeploymentParityTests(unittest.TestCase):
         except TypeError:
             self.fail("Distance search has no explicit board or deadline boundary")
         self.assertEqual(distance, 999)
+
+    def test_visible_neck_does_not_become_a_free_tail_when_real_tail_is_hidden(self):
+        enemy = {"id": "partial", "health": 100, "length": 3,
+                 "head": {"x": 7, "y": 5},
+                 "body": [{"x": 7, "y": 5}, {"x": 6, "y": 5}, {"x": -1, "y": -1}]}
+        raw = materialize(state(
+            body=[{"x": 5, "y": 5}, {"x": 5, "y": 4}, {"x": 5, "y": 3}],
+            enemies=[enemy],
+        ))
+        context = main.TacticalEngine._build_context(raw, set(), "partial-tail", float("inf"))
+        self.assertTrue(main.TacticalEngine._is_certain_death((6, 5), context))
+
+    def test_hidden_head_is_not_replaced_by_a_later_visible_body_segment(self):
+        enemy = {"id": "partial", "health": 100, "length": 3,
+                 "head": {"x": -1, "y": -1},
+                 "body": [{"x": -1, "y": -1}, {"x": 7, "y": 5}, {"x": 7, "y": 4}]}
+        raw = materialize(state(
+            body=[{"x": 5, "y": 5}, {"x": 5, "y": 4}, {"x": 5, "y": 3}],
+            enemies=[enemy],
+        ))
+        context = main.TacticalEngine._build_context(raw, set(), "partial-head", float("inf"))
+        self.assertEqual(context.enemy_data, [])
+        self.assertIn((7, 5), context.occupied)
