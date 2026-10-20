@@ -330,12 +330,13 @@ def _run_standalone_game(
         # Body collision (tail-vacating aware, head-vacating aware)
         alive_snakes = [snakes[i] for i in alive]
         body_cells = _build_occupied_sim(alive_snakes, new_heads)
+        collision_sources = {s.id: _build_occupied_sim([s], new_heads) for s in alive_snakes}
         for i in alive:
             if new_heads[i] in body_cells:
                 snakes[i].alive = False
                 deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "body-collision", "length": snakes[i].length,
                                "snake_id": snakes[i].id,
-                               "collision_owners": [s.id for s in alive_snakes if new_heads[i] in _build_occupied_sim([s], new_heads)],
+                               "collision_owners": [snake_id for snake_id, cells in collision_sources.items() if new_heads[i] in cells],
                                "collision_position": list(new_heads[i]),
                                "own_body": [list(point) for point in snakes[i].body]})
                 if verbose:
