@@ -23,3 +23,24 @@ The repair excludes hidden coordinates from geometry and bounds internal distanc
 At implementation commit `99df97bdc7cfc81409da7e49d90ef223e6974204`, four real training games and one PPO update produced a distinct frozen candidate. The sixteen held-out mirrored games returned 7 candidate wins, 8 losses and 1 draw (score 0.46875), with zero candidate invalid directions or budget overruns. The gate rejected the candidate and retained the baseline. This small experiment does not establish general playing strength or superiority of an agent framework.
 
 Evidence: [CI experiment and profiler](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39486127410); [pre-fix profile](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39485875449). No checkpoint was promoted or deployed.
+
+
+## Partial observations and standalone regression findings
+
+Hidden body slots retain their original indices when determining an opponent's head and tail. Compacting visible coordinates could otherwise invent a head or treat a visible neck as a vacating tail. Match phase counts known opponent records even when their geometry is hidden.
+
+The broader seed sweep exposed a separate standalone simulator error: eating retained the old tail and then appended another copy, growing by two segments. A scripted one-meal regression reproduced length 3 becoming 5. The simulator now always removes one tail before appending the food-growth segment, matching the [official turn order](https://docs.battlesnake.com/rules). At implementation commit `7cee052f210bd676515be74bdb60188361755659`, the meal regression and the unchanged early-collision predicates across seeds 1–10 pass ([CI](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39487856414)). The seed-9 failure under the double-growth simulator is not evidence of a defect under official rules.
+
+The standalone runner remains approximate: it removes old head cells from collision occupancy, although those cells become necks, and subtracts hunger after resetting meal health, yielding 99. These existing differences are not repaired here. Use the Hisss experiment for real-engine comparisons; a green standalone seed sweep is a regression check, not a conformance certificate.
+
+## Repeatability limits
+
+Later CI runs with the same bounded training/evaluation settings returned different results:
+
+| Implementation | Candidate W–L–D | Score | Per-run gate |
+| --- | --- | --- | --- |
+| `99df97b` | 7–8–1 | 0.46875 | Retain baseline |
+| `19ad1cf` | 8–7–1 | 0.53125 | Retain baseline |
+| `e25b67a` | 11–4–1 | 0.71875 | Eligible for manual review |
+
+Evidence: [99df97b](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39486127410), [19ad1cf](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39486683713), [e25b67a](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39487415760). All three completed real-engine experiments reported zero candidate invalid directions and deadline overruns. Each CI execution performs a fresh PPO update; these are not repeated evaluations of one identical candidate artifact. The source of the variation has not been isolated. The score gate is a per-run screen for manual review; repeated evaluation of fixed artifacts is still needed before claiming reliable strength gains. Nothing was promoted.
