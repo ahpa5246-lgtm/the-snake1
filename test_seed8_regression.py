@@ -132,3 +132,41 @@ if __name__ == "__main__":
         print(f"\n{failures}/{len(tests)} test(s) failed.")
         sys.exit(1)
     print(f"\nAll {len(tests)} tests passed.")
+
+
+def test_standalone_food_adds_exactly_one_segment(monkeypatch):
+    """One meal must match the official add-head/remove-tail/duplicate-tail order."""
+    import run_games
+
+    class ScriptedAgent:
+        def __init__(self, name):
+            self.name = name
+            self.observed = []
+
+        def get_name(self):
+            return self.name
+
+        def start(self, state):
+            pass
+
+        def end(self, state):
+            pass
+
+        def move(self, state):
+            self.observed.append(state.model_dump())
+            return "right"
+
+    monkeypatch.setattr(run_games, "FOOD_MIN", 1)
+    monkeypatch.setattr(run_games, "FOOD_SPAWN_PROB", 0)
+    monkeypatch.setattr(run_games, "_random_empty", lambda occupied: (2, 1))
+    monkeypatch.setattr(run_games, "HAZARD_CELLS", [])
+    monkeypatch.setattr(run_games, "HAZARD_DMG", 0)
+    eater = ScriptedAgent("eater")
+    # The second snake exits the right edge on turn two, bounding this fixture.
+    run_games._run_standalone_game([eater, ScriptedAgent("exit")], "one-meal", False)
+    after_meal = eater.observed[1]["you"]
+    assert after_meal["length"] == 4
+    assert after_meal["body"] == [
+        {"x": 2, "y": 1}, {"x": 1, "y": 1},
+        {"x": 1, "y": 1}, {"x": 1, "y": 1},
+    ]
