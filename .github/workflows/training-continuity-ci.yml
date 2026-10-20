@@ -76,3 +76,79 @@ jobs:
           if missing_evaluator:
               raise SystemExit(f"missing evaluation safety invariants: {missing_evaluator}")
           PY
+
+  deployed-policy-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install CPU evaluation dependencies
+        run: python -m pip install -r requirements-training.txt
+      - name: Freeze baseline and perform one bounded PPO update
+        run: |
+          timeout 120s python - <<'PY'
+          import json, random, shutil
+          from dataclasses import asdict
+          from pathlib import Path
+          import torch
+          from neural_policy import load_checkpoint, save_checkpoint
+          from training.neural_selfplay import (PPOConfig, PoolEntry, PrioritizedOpponentPool,
+                                                collect_games_vectorized, ppo_update)
+          torch.set_num_threads(1)
+          random.seed(2026)
+          torch.manual_seed(2026)
+          root = Path("/tmp/deployed-policy-experiment")
+          root.mkdir()
+          shutil.copy2("training/checkpoints/neural/champion.pt", root / "baseline.pt")
+          model, meta, _ = load_checkpoint(root / "baseline.pt")
+          config = PPOConfig(games_per_update=4, max_turns=80, epochs=1, seed=2026)
+          pool = PrioritizedOpponentPool(entries=[PoolEntry("random", "random"), PoolEntry("tactical", "tactical")])
+          games = collect_games_vectorized(model, pool, config, "cpu", random.Random(2026), 1, 1)
+          records = [record for trajectory, *_ in games for record in trajectory]
+          assert records, "No training transitions collected"
+          optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+          metrics = ppo_update(model, optimizer, records, config, "cpu")
+          save_checkpoint(root / "candidate.pt", model, blocks=meta.blocks, board_size=meta.board_size)
+          (root / "training.json").write_text(json.dumps({
+              "fixture": False, "training_games": len(games), "transitions": len(records),
+              "configuration": asdict(config), "metrics": metrics, "promotion_performed": False,
+          }, indent=2))
+          PY
+      - name: Compare frozen candidate through the served decision path
+        run: |
+          timeout 240s python training/evaluate_candidate.py \
+            --baseline /tmp/deployed-policy-experiment/baseline.pt \
+            --candidate /tmp/deployed-policy-experiment/candidate.pt \
+            --output /tmp/deployed-policy-experiment/report.json \
+            --training-seed 2026 \
+            --seeds 7103 7109 7121 7127 7211 7213 7219 7229 \
+            --max-turns 120 --minimum-games 16 --minimum-score 0.55
+          python - <<'PY'
+          import json, os
+          report = json.load(open("/tmp/deployed-policy-experiment/report.json"))
+          assert report["policy"] == "served_tactics_plus_frozen_neural_adviser"
+          assert report["promotion_performed"] is False
+          assert report["model_states"]["distinct"], "PPO did not change the policy"
+          assert all(report["adviser_activity"].values()), "Neural adviser did not run"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("### Real-engine served-policy experiment\n\n")
+              out.write(json.dumps({"candidate": report["candidate"], "baseline": report["baseline"],
+                                   "adviser_activity": report["adviser_activity"], "gate": report["gate"]}, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: served-policy-experiment
+          path: |
+            /tmp/deployed-policy-experiment/report.json
+            /tmp/deployed-policy-experiment/training.json
