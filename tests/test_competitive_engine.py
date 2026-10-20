@@ -154,3 +154,37 @@ class DeploymentParityTests(unittest.TestCase):
         self.assertIs(candidate.advisor._model, candidate_model)
         self.assertIs(baseline.advisor._model, baseline_model)
         self.assertIs(main.NeuralAdvisor._model, original)
+
+    def test_frozen_policy_records_decisions_that_exceed_the_live_budget(self):
+        from unittest.mock import patch
+        from training.evaluate_candidate import _DeployedPolicyAgent
+        agent = _DeployedPolicyAgent(None, 25, "slow-evaluation")
+        clock = [0.0]
+
+        def slow_decision(*args, **kwargs):
+            clock[0] += main.COMPUTE_BUDGET_S + 0.01
+            return "up"
+
+        with patch("time.monotonic", side_effect=lambda: clock[0]):
+            with patch.object(main.TacticalEngine, "get_best_move", side_effect=slow_decision):
+                agent.choose(self.raw)
+        self.assertEqual(getattr(agent, "deadline_overruns", None), 1)
+
+    def test_late_decisions_cannot_pass_the_evaluation_gate(self):
+        from training.evaluate_candidate import summarize_matches
+        matches = []
+        for candidate_slot, baseline_slot in ((0, 2), (2, 0)):
+            matches.append({
+                "seed": 7103, "outcome": "candidate_win",
+                "candidate": {"slot": candidate_slot, "invalid_directions": 0,
+                              "survival_turns": 100, "final_length": 8, "deadline_overruns": 1},
+                "baseline": {"slot": baseline_slot, "invalid_directions": 0,
+                             "survival_turns": 90, "final_length": 7, "deadline_overruns": 0},
+            })
+        result = summarize_matches(
+            matches, baseline_model_sha256="a"*64, candidate_model_sha256="b"*64,
+            baseline_checkpoint_sha256="c"*64, candidate_checkpoint_sha256="d"*64,
+            seeds=[7103], minimum_games=2,
+        )
+        self.assertFalse(result["gate"]["passed"])
+        self.assertIn("decision_budget_exceeded", result["gate"]["blockers"])
