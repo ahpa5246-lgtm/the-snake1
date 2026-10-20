@@ -142,6 +142,8 @@ def summarize_matches(
         if match["outcome"] == "baseline_win"
     )
 
+    candidate_overruns = sum(int(match["candidate"].get("deadline_overruns", 0)) for match in matches)
+    baseline_overruns = sum(int(match["baseline"].get("deadline_overruns", 0)) for match in matches)
     enough_evidence = len(matches) >= minimum_games
     distinct_candidate = baseline_model_sha256 != candidate_model_sha256
     score = _rate(candidate_points, len(matches))
@@ -149,6 +151,8 @@ def summarize_matches(
         enough_evidence
         and distinct_candidate
         and candidate_illegal == 0
+        and candidate_overruns == 0
+        and baseline_overruns == 0
         and score >= minimum_score
         and wins > losses
     )
@@ -159,6 +163,8 @@ def summarize_matches(
         blockers.append("candidate_matches_baseline")
     if candidate_illegal:
         blockers.append("invalid_directions_observed")
+    if candidate_overruns or baseline_overruns:
+        blockers.append("decision_budget_exceeded")
     if score < minimum_score:
         blockers.append("score_below_threshold")
     if wins <= losses:
@@ -194,6 +200,7 @@ def summarize_matches(
             "draws": draws,
             "score": score,
             "invalid_directions": candidate_illegal,
+            "deadline_overruns": candidate_overruns,
             "mean_survival_turns": round(fmean(match["candidate"]["survival_turns"] for match in matches), 3),
             "mean_final_length": round(fmean(match["candidate"]["final_length"] for match in matches), 3),
             "loss_profile": dict(sorted(failure_counts.items())),
@@ -204,6 +211,7 @@ def summarize_matches(
             "draws": draws,
             "score": _rate(losses + 0.5 * draws, len(matches)),
             "invalid_directions": baseline_illegal,
+            "deadline_overruns": baseline_overruns,
             "mean_survival_turns": round(fmean(match["baseline"]["survival_turns"] for match in matches), 3),
             "mean_final_length": round(fmean(match["baseline"]["final_length"] for match in matches), 3),
         },
@@ -247,6 +255,7 @@ class _DeployedPolicyAgent:
         self.tag = tag
         self.neural_inferences = 0
         self.moves = 0
+        self.deadline_overruns = 0
         self.total_latency_ms = 0.0
         owner = self
 
@@ -277,7 +286,9 @@ class _DeployedPolicyAgent:
             started + COMPUTE_BUDGET_S, advisor=self.advisor,
         )
         self.moves += 1
-        self.total_latency_ms += (time.monotonic() - started) * 1000
+        elapsed = time.monotonic() - started
+        self.total_latency_ms += elapsed * 1000
+        self.deadline_overruns += int(elapsed > COMPUTE_BUDGET_S)
         return direction
 
 
@@ -365,6 +376,7 @@ def _play_match(
         return {
             "slot": slot,
             "neural_inferences": agents[slot].neural_inferences,
+            "deadline_overruns": agents[slot].deadline_overruns,
             "moves": agents[slot].moves,
             "mean_decision_ms": round(agents[slot].total_latency_ms / max(1, agents[slot].moves), 3),
             "survived": survived,
