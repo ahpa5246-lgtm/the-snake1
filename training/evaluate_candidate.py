@@ -13,6 +13,7 @@ import json
 import math
 import random
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from statistics import fmean
@@ -21,8 +22,10 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-SCHEMA_VERSION = 2
-PROTOCOL = "frozen-held-out-hisss-v2-mirrored"
+SCHEMA_VERSION = 3
+# Earlier reports used frozen-held-out-hisss-v2-mirrored and measured direct
+# neural actions. Those scores are not comparable to the served-policy protocol.
+PROTOCOL = "frozen-held-out-hisss-v3-deployed-mirrored"
 DEFAULT_HELD_OUT_SEEDS = (7103, 7109, 7121, 7127, 7211, 7213, 7219, 7229)
 
 
@@ -164,6 +167,8 @@ def summarize_matches(
     return {
         "schema_version": SCHEMA_VERSION,
         "protocol": PROTOCOL,
+        "policy": "served_tactics_plus_frozen_neural_adviser",
+        "move_budget_ms": 200,
         "promotion_performed": False,
         "checkpoints": {
             "baseline_file_sha256": baseline_checkpoint_sha256,
@@ -235,24 +240,45 @@ def _fixed_scenario(hisss: Any, seed: int) -> Any:
     return config
 
 
-class _GreedyNeuralAgent:
-    def __init__(self, model: Any, device: str, board_size: int, tag: str) -> None:
-        self.model = model
-        self.device = device
-        self.board_size = board_size
+class _DeployedPolicyAgent:
+    """Frozen checkpoint through the same safety, scoring and adviser as /move."""
+    def __init__(self, model: Any, board_size: int, tag: str) -> None:
+        from main import NeuralAdvisor
         self.tag = tag
+        self.neural_inferences = 0
+        self.moves = 0
+        self.total_latency_ms = 0.0
+        owner = self
+
+        class FrozenAdvisor(NeuralAdvisor):
+            _attempted = True
+            _model = model
+            _board_size = board_size
+            _device = "cpu"
+
+            @classmethod
+            def scores(cls, data, legal, deadline):
+                result = super().scores(data, legal, deadline)
+                if result:
+                    owner.neural_inferences += 1
+                return result
+
+        # Each player owns its class state. No process-global model swapping.
+        self.advisor = FrozenAdvisor
 
     def choose(self, raw: dict[str, Any]) -> str:
-        import torch
-        from neural_policy import DIRECTIONS, encode_state, masked_distribution
-        from training.neural_selfplay import _action_mask
-
-        legal = _action_mask(raw, self.tag)
-        observation = encode_state(raw, self.board_size).unsqueeze(0).to(self.device)
-        with torch.inference_mode():
-            logits, _value = self.model(observation)
-            action = int(torch.argmax(masked_distribution(logits, legal), dim=1).item())
-        return DIRECTIONS[action]
+        from main import (COMPUTE_BUDGET_S, TacticalEngine, _game_memory,
+                          _new_mem_entry, _update_enemy_memory, _update_food_memory)
+        started = time.monotonic()
+        _game_memory.setdefault(self.tag, _new_mem_entry())
+        _update_enemy_memory(self.tag, raw)
+        direction = TacticalEngine.get_best_move(
+            raw, _update_food_memory(self.tag, raw), self.tag,
+            started + COMPUTE_BUDGET_S, advisor=self.advisor,
+        )
+        self.moves += 1
+        self.total_latency_ms += (time.monotonic() - started) * 1000
+        return direction
 
 
 def _play_match(
@@ -268,20 +294,20 @@ def _play_match(
 ) -> dict[str, Any]:
     import hisss
     import torch
-    from training.neural_selfplay import TacticalGameAgent, _direction_map
+    from training.neural_selfplay import _direction_map
 
     random.seed(seed)
     torch.manual_seed(seed)
     if candidate_slot == baseline_slot:
         raise ValueError("candidate and baseline must occupy different slots")
     agents: list[Any] = [
-        TacticalGameAgent(f"eval-{seed}-tactical-{slot}") for slot in range(4)
+        _DeployedPolicyAgent(None, board_size, f"eval-{seed}-{mirror_index}-tactical-{slot}") for slot in range(4)
     ]
-    agents[candidate_slot] = _GreedyNeuralAgent(
-        candidate_model, "cpu", board_size, f"eval-{seed}-candidate"
+    agents[candidate_slot] = _DeployedPolicyAgent(
+        candidate_model, board_size, f"eval-{seed}-{mirror_index}-candidate"
     )
-    agents[baseline_slot] = _GreedyNeuralAgent(
-        baseline_model, "cpu", board_size, f"eval-{seed}-baseline"
+    agents[baseline_slot] = _DeployedPolicyAgent(
+        baseline_model, board_size, f"eval-{seed}-{mirror_index}-baseline"
     )
 
     environment = hisss.BattleSnakeGame(_fixed_scenario(hisss, seed))
@@ -338,6 +364,9 @@ def _play_match(
         )
         return {
             "slot": slot,
+            "neural_inferences": agents[slot].neural_inferences,
+            "moves": agents[slot].moves,
+            "mean_decision_ms": round(agents[slot].total_latency_ms / max(1, agents[slot].moves), 3),
             "survived": survived,
             "survival_turns": survived_turns,
             "final_length": int(lengths[slot]),
@@ -349,6 +378,9 @@ def _play_match(
 
     candidate = player_result(candidate_slot)
     baseline = player_result(baseline_slot)
+    from main import _game_memory
+    for agent in agents:
+        _game_memory.pop(agent.tag, None)
     if candidate["score"] > baseline["score"]:
         outcome = "candidate_win"
     elif baseline["score"] > candidate["score"]:
@@ -368,6 +400,8 @@ def _play_match(
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     from neural_policy import load_checkpoint
+    import torch
+    torch.set_num_threads(1)
 
     baseline_path = Path(args.baseline)
     candidate_path = Path(args.candidate)
@@ -416,6 +450,16 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         minimum_games=args.minimum_games,
         minimum_score=args.minimum_score,
     )
+    report["adviser_activity"] = {
+        label: sum(match[label]["neural_inferences"] for match in matches)
+        for label in ("candidate", "baseline")
+    }
+    if any(count == 0 for count in report["adviser_activity"].values()):
+        report["gate"]["passed"] = False
+        report["gate"]["recommendation"] = "retain_frozen_baseline"
+        report["gate"]["blockers"].append("neural_adviser_not_exercised")
+    report["environment"] = {"torch_threads": torch.get_num_threads(), "device": "cpu",
+                             "torch_version": torch.__version__}
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

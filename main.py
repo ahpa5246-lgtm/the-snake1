@@ -271,7 +271,7 @@ class TacticalEngine:
     DIRECTIONS: dict[str, tuple[int, int]] = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
 
     @classmethod
-    def get_best_move(cls, data: dict[str, Any], merged_food: set[tuple[int, int]], game_id: str, deadline: float) -> str:
+    def get_best_move(cls, data: dict[str, Any], merged_food: set[tuple[int, int]], game_id: str, deadline: float, advisor: Any = None) -> str:
         ctx = cls._build_context(data, merged_food, game_id, deadline)
         candidates = {direction: (ctx.our_head[0] + delta[0], ctx.our_head[1] + delta[1]) for direction, delta in cls.DIRECTIONS.items()}
 
@@ -286,7 +286,7 @@ class TacticalEngine:
         # Pre-compute only bounded feature searches.  Neural scores are added
         # after the safety filter and therefore can never authorise a fatal move.
         scored = {direction: cls._score_move(candidates[direction], ctx) for direction in pool}
-        neural = NeuralAdvisor.scores(data, set(pool), deadline)
+        neural = (NeuralAdvisor if advisor is None else advisor).scores(data, set(pool), deadline)
         if neural:
             max_abs = max(1.0, max(abs(value) for value in neural.values()))
             for direction, logit in neural.items():
