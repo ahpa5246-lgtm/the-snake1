@@ -150,9 +150,14 @@ def _as_int(value: Any, default: int) -> int:
 
 
 def _pt(segment: Any) -> tuple[int, int] | None:
-    if not isinstance(segment, dict) or segment.get("x") is None or segment.get("y") is None:
+    if not isinstance(segment, dict):
         return None
-    return _as_int(segment["x"], 0), _as_int(segment["y"], 0)
+    x, y = segment.get("x"), segment.get("y")
+    # Blackout represents hidden segments with negative placeholders. They
+    # are unknown positions, never real cells outside the board.
+    if type(x) is not int or type(y) is not int or x < 0 or y < 0:
+        return None
+    return x, y
 
 
 def _manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
@@ -271,7 +276,7 @@ class TacticalEngine:
     DIRECTIONS: dict[str, tuple[int, int]] = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
 
     @classmethod
-    def get_best_move(cls, data: dict[str, Any], merged_food: set[tuple[int, int]], game_id: str, deadline: float) -> str:
+    def get_best_move(cls, data: dict[str, Any], merged_food: set[tuple[int, int]], game_id: str, deadline: float, advisor: Any = None) -> str:
         ctx = cls._build_context(data, merged_food, game_id, deadline)
         candidates = {direction: (ctx.our_head[0] + delta[0], ctx.our_head[1] + delta[1]) for direction, delta in cls.DIRECTIONS.items()}
 
@@ -286,7 +291,7 @@ class TacticalEngine:
         # Pre-compute only bounded feature searches.  Neural scores are added
         # after the safety filter and therefore can never authorise a fatal move.
         scored = {direction: cls._score_move(candidates[direction], ctx) for direction in pool}
-        neural = NeuralAdvisor.scores(data, set(pool), deadline)
+        neural = (NeuralAdvisor if advisor is None else advisor).scores(data, set(pool), deadline)
         if neural:
             max_abs = max(1.0, max(abs(value) for value in neural.values()))
             for direction, logit in neural.items():
@@ -315,15 +320,20 @@ class TacticalEngine:
         mode = game_mode(data)
         cls._add_body(occupied, our_body, retain_tail=is_constrictor(mode))
         enemies: list[dict[str, Any]] = []
+        enemy_count = 0
         you_id = you.get("id")
         for snake in board.get("snakes", []):
             if snake.get("id") == you_id:
                 continue
-            body = [point for point in (_pt(segment) for segment in snake.get("body", [])) if point is not None]
-            cls._add_body(occupied, body, retain_tail=is_constrictor(mode))
-            head = _pt(snake.get("head")) or (body[0] if body else None)
-            if head:
-                enemies.append({"id": snake.get("id", "enemy"), "head_pos": head, "length": _as_int(snake.get("length"), len(body) or 1), "health": _as_int(snake.get("health"), 100), "body": body})
+            enemy_count += 1
+            # Keep original segment slots when identifying head and tail.
+            # Compacting visible cells could turn a neck into a vacating tail.
+            cells = [_pt(segment) for segment in snake.get("body", [])]
+            cls._add_body(occupied, cells, retain_tail=is_constrictor(mode))
+            body = [point for point in cells if point is not None]
+            head = _pt(snake.get("head")) or (cells[0] if cells else None)
+            if head and 0 <= head[0] < width and 0 <= head[1] < height:
+                enemies.append({"id": snake.get("id", "enemy"), "head_pos": head, "length": _as_int(snake.get("length"), len(cells) or 1), "health": _as_int(snake.get("health"), 100), "body": body})
 
         hazards = {point for point in (_pt(item) for item in board.get("hazards", [])) if point is not None}
         visible_food = {point for point in (_pt(item) for item in board.get("food", [])) if point is not None}
@@ -348,7 +358,7 @@ class TacticalEngine:
         turn = _as_int(data.get("turn"), 0)
         if turn < 16:
             phase = GamePhase.EARLY
-        elif len(enemies) == 1:
+        elif enemy_count == 1:
             phase = GamePhase.LATE_1V1
         elif turn >= 55:
             phase = GamePhase.LATE_FFA
@@ -368,7 +378,7 @@ class TacticalEngine:
         return walls
 
     @staticmethod
-    def _add_body(occupied: set[tuple[int, int]], body: list[tuple[int, int]], retain_tail: bool = False) -> None:
+    def _add_body(occupied: set[tuple[int, int]], body: list[tuple[int, int] | None], retain_tail: bool = False) -> None:
         """Mark currently blocking body cells.
 
         Normal, unstacked tails vacate; Constrictor tails never vacate.
@@ -376,9 +386,10 @@ class TacticalEngine:
         """
         if not body:
             return
-        occupied.update(body[:-1])
-        if retain_tail or len(body) == 1 or (len(body) >= 2 and body[-1] == body[-2]):
-            occupied.add(body[-1])
+        occupied.update(point for point in body[:-1] if point is not None)
+        tail = body[-1]
+        if tail is not None and (retain_tail or len(body) == 1 or (len(body) >= 2 and tail == body[-2])):
+            occupied.add(tail)
 
     @classmethod
     def _is_certain_death(cls, candidate: tuple[int, int], ctx: GameContext) -> bool:
@@ -435,18 +446,27 @@ class TacticalEngine:
         return count
 
     @classmethod
-    def _bfs_dist(cls, start: tuple[int, int], targets: set[tuple[int, int]], occupied: set[tuple[int, int]], limit: int = 100) -> int:
-        if not targets:
+    def _bfs_dist(cls, start: tuple[int, int], targets: set[tuple[int, int]], occupied: set[tuple[int, int]], limit: int = 100, *, width: int | None = None, height: int | None = None, deadline: float = float("inf")) -> int:
+        bounded = width is not None and height is not None
+
+        def inside(point):
+            return not bounded or (0 <= point[0] < width and 0 <= point[1] < height)
+
+        if not targets or not inside(start):
             return 999
         if start in targets:
             return 0
         queue, seen = deque([(start, 0)]), {start}
         while queue:
+            if time.monotonic() >= deadline - 0.004:
+                return 999
             position, distance = queue.popleft()
             if distance >= limit:
                 continue
             for dx, dy in cls.DIRECTIONS.values():
                 nxt = position[0] + dx, position[1] + dy
+                if not inside(nxt):
+                    continue
                 if nxt in targets:
                     return distance + 1
                 if nxt not in occupied and nxt not in seen:
@@ -484,13 +504,13 @@ class TacticalEngine:
     def _food_race_score(cls, candidate: tuple[int, int], ctx: GameContext) -> float:
         if not ctx.merged_food:
             return 0.0
-        our_distance = cls._bfs_dist(candidate, ctx.merged_food, ctx.occupied, limit=ctx.width * ctx.height)
+        our_distance = cls._bfs_dist(candidate, ctx.merged_food, ctx.occupied, limit=ctx.width * ctx.height, width=ctx.width, height=ctx.height, deadline=ctx.deadline)
         if our_distance >= 999:
             return -ctx.weights["W_RACE"]
         target = min(ctx.merged_food, key=lambda food: _manhattan(candidate, food))
         closest_enemy, enemy_length = 999, 0
         for enemy in ctx.enemy_data:
-            distance = cls._bfs_dist(enemy["head_pos"], {target}, ctx.occupied, limit=ctx.width * ctx.height)
+            distance = cls._bfs_dist(enemy["head_pos"], {target}, ctx.occupied, limit=ctx.width * ctx.height, width=ctx.width, height=ctx.height, deadline=ctx.deadline)
             if distance < closest_enemy:
                 closest_enemy, enemy_length = distance, int(enemy["length"])
         if our_distance < closest_enemy:
@@ -539,7 +559,7 @@ class TacticalEngine:
             if int(enemy["length"]) < ctx.our_len and _manhattan(candidate, enemy["head_pos"]) == 1:
                 score += weights["W_KILL"]
         if ctx.our_tail and not growing:
-            tail_distance = cls._bfs_dist(candidate, {ctx.our_tail}, ctx.occupied, limit=ctx.width * ctx.height)
+            tail_distance = cls._bfs_dist(candidate, {ctx.our_tail}, ctx.occupied, limit=ctx.width * ctx.height, width=ctx.width, height=ctx.height, deadline=ctx.deadline)
             if tail_distance < 999:
                 score += max(0, 16 - tail_distance) * weights["W_TAIL"]
         center = ((ctx.width - 1) // 2, (ctx.height - 1) // 2)

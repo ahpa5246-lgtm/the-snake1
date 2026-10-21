@@ -275,6 +275,7 @@ def _run_standalone_game(
     deaths: list[dict] = []
     hazard_deaths = 0
     hazard_dmg_total = 0
+    recent_moves = {}
     turn = 0
 
     while True:
@@ -308,6 +309,11 @@ def _run_standalone_game(
             except Exception:
                 moves[i] = random.choice(list(DIRS.keys()))
 
+        for i in alive:
+            trace = recent_moves.setdefault(i, [])
+            trace.append({"state": _mk_state(game_id, turn, snakes, food, i), "move": moves[i]})
+            del trace[:-3]
+
         # Compute new heads
         new_heads: dict[int, tuple[int, int]] = {
             i: (snakes[i].head[0] + DIRS[moves[i]][0],
@@ -330,10 +336,16 @@ def _run_standalone_game(
         # Body collision (tail-vacating aware, head-vacating aware)
         alive_snakes = [snakes[i] for i in alive]
         body_cells = _build_occupied_sim(alive_snakes, new_heads)
+        collision_sources = {s.id: _build_occupied_sim([s], new_heads) for s in alive_snakes}
         for i in alive:
             if new_heads[i] in body_cells:
                 snakes[i].alive = False
-                deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "body-collision", "length": snakes[i].length})
+                deaths.append({"game_id": game_id, "turn": turn, "agent": snakes[i].name, "cause": "body-collision", "length": snakes[i].length,
+                               "snake_id": snakes[i].id,
+                               "collision_owners": [snake_id for snake_id, cells in collision_sources.items() if new_heads[i] in cells],
+                               "collision_position": list(new_heads[i]),
+                               "own_body": [list(point) for point in snakes[i].body],
+                               "recent_moves": recent_moves.get(i, [])})
                 if verbose:
                     print(f"    [{snakes[i].name}] died turn {turn}: body collision")
 
@@ -373,9 +385,10 @@ def _run_standalone_game(
         for i in alive:
             ate = new_heads[i] in food
             snakes[i].body.insert(0, new_heads[i])
-            if not ate:
-                snakes[i].body.pop()
-            else:
+            # Every move removes the old tail before food adds one segment.
+            # Retaining it here as well as duplicating below grew by two.
+            snakes[i].body.pop()
+            if ate:
                 snakes[i].health = START_HEALTH
                 # Duplicate tail segment — matches real server behaviour so
                 # that _build_occupied_sim can detect "just ate" via
