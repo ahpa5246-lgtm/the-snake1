@@ -17,3 +17,19 @@ The profile screenshot supplied by the player showed Constrictor rating **7,836 
 * The neural champion is unchanged; the existing optional `NeuralAdvisor` remains behind safety filtering.
 
 References: [official rules](https://docs.battlesnake.com/rules), [Constrictor map](https://docs.battlesnake.com/maps), [leaderboards](https://docs.battlesnake.com/guides/leaderboards), [useful algorithms](https://docs.battlesnake.com/guides/useful-algorithms).
+
+
+## First Hisss comparison — 2026-10-23
+
+[200-game mirrored Hisss workflow](https://github.com/ahpa5246-lgtm/the-snake1/actions/runs/39967870346), seed range 173–272, two fixed starting seat orders, two random opponents, 11×11 Constrictor, 120-turn cap:
+
+| Metric | Candidate | Frozen main baseline |
+| --- | ---: | ---: |
+| Better survival outcomes | 39 | 13 |
+| Draws | 148 | 148 |
+| Win-share with half-point draws | **56.5%** | 43.5% |
+| Invalid actions | 0 | 0 |
+| Internal decision p95 | 12.28ms | 2.04ms |
+| Internal budget overruns | 0 / 6,100 | 0 / 5,668 |
+
+The sample **favors the candidate on this scenario**. However fixed opening positions, random opponents, a survival-length proxy outcome, and common ties cannot establish broad competitive dominance or a future live leaderboard rank. External HTTP latency/hosting timeouts and daily Battlesnake rating updates were not tested. Do not overwrite frozen neural champion or claim an official rating gain on this basis. This PR changes the Constrictor tactical policy and fixes a separate local simulator; other categories retain the existing tactics.
