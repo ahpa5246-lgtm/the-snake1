@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from strategy_search import game_mode, head_to_head_risk, is_constrictor, safe_food_distance, survive_horizon
+from constrictor_search import route_quality as constrictor_route_quality
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
 log = logging.getLogger("battlesnake")
@@ -290,7 +291,26 @@ class TacticalEngine:
 
         # Pre-compute only bounded feature searches.  Neural scores are added
         # after the safety filter and therefore can never authorise a fatal move.
-        scored = {direction: cls._score_move(candidates[direction], ctx) for direction in pool}
+        if is_constrictor(ctx.game_mode):
+            # This mode grows permanently on *every* turn. A flood-filled
+            # connected component is not evidence of a long self-avoiding
+            # route, so prioritize a bounded growth-aware path estimate.
+            enemy_heads = tuple(enemy["head_pos"] for enemy in ctx.enemy_data)
+            scored = {}
+            for direction in pool:
+                route_len, uncontested, exits = constrictor_route_quality(
+                    candidates[direction], width=ctx.width, height=ctx.height,
+                    occupied=ctx.occupied, opponent_heads=enemy_heads,
+                    deadline=deadline,
+                )
+                # Longest surviving route dominates all small tactical
+                # preferences; opponent reach and exits break depth ties.
+                scored[direction] = (
+                    1000.0 * route_len + 20.0 * uncontested
+                    + 4.0 * exits + 0.02 * cls._score_move(candidates[direction], ctx)
+                )
+        else:
+            scored = {direction: cls._score_move(candidates[direction], ctx) for direction in pool}
         neural = (NeuralAdvisor if advisor is None else advisor).scores(data, set(pool), deadline)
         if neural:
             max_abs = max(1.0, max(abs(value) for value in neural.values()))
