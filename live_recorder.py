@@ -23,6 +23,38 @@ def replay_dir() -> Path:
     return _REPLAY_DIR
 
 
+# Large match files contain a complete JSON observation on every move.
+# Read only the tail to determine completion/activity; never read the entire
+# replay file into RAM on every scheduled Cloudflare polling request.
+MAX_LAST_EVENT_BYTES = 256 * 1024
+
+
+def last_replay_event(path: Path) -> dict[str, Any]:
+    """Return the last complete JSONL event using bounded I/O/memory.
+
+    A final record larger than MAX_LAST_EVENT_BYTES is treated as unknown,
+    rather than risking an unbounded allocation on the public replay endpoint.
+    """
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            if not size:
+                return {}
+            start = max(0, size - MAX_LAST_EVENT_BYTES)
+            handle.seek(start)
+            lines = handle.read().splitlines()
+        if start > 0:
+            # First line may be truncated by the seek.
+            lines = lines[1:]
+        if not lines:
+            return {}
+        event = json.loads(lines[-1])
+        return event if isinstance(event, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def replay_activity(active_window_seconds: int = 120) -> dict[str, Any]:
     """Summarize current BattleSnake traffic without exposing partial games."""
     now = time.time()
@@ -34,8 +66,7 @@ def replay_activity(active_window_seconds: int = 120) -> dict[str, Any]:
             last_activity = max(last_activity, modified)
             if now - modified > active_window_seconds:
                 continue
-            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-            last_event = json.loads(lines[-1]) if lines else {}
+            last_event = last_replay_event(path)
             if last_event.get("type") != "end":
                 active_games += 1
         except (OSError, ValueError, TypeError):
