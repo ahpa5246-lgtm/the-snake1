@@ -38,6 +38,35 @@ class ConstrictorPathTests(unittest.TestCase):
         self.assertEqual(quality[0], 1)
         self.assertLess(time.monotonic() - start, 0.1)
 
+    def test_production_route_selection_uses_longer_constrictor_plan(self):
+        from unittest.mock import patch
+        from main import TacticalEngine
+        point = lambda x, y: {"x": x, "y": y}
+        body = [point(2, 2), point(2, 1), point(2, 0)]
+        our = {"id": "us", "health": 100, "length": 3,
+               "head": body[0], "body": body}
+        raw = {
+            "game": {"id": "constrictor-test",
+                     "ruleset": {"name": "constrictor",
+                                 "settings": {"hazardDamagePerTurn": 0}}},
+            "turn": 16,
+            "board": {"width": 7, "height": 7,
+                      "snakes": [our], "hazards": [], "food": []},
+            "you": our,
+        }
+        def fake_quality(point, **kwargs):
+            return (12, 12, 3) if point == (2, 3) else (3, 3, 1)
+        with patch.object(TacticalEngine, "_is_safe",
+                          side_effect=lambda position, ctx: position in ((2, 3), (3, 2))):
+            with patch("main.constrictor_route_quality", side_effect=fake_quality):
+                with patch.object(TacticalEngine, "_score_move", return_value=0):
+                    direction = TacticalEngine.get_best_move(
+                        raw, set(), "test", time.monotonic() + 1,
+                        advisor=type("NoAdvisor", (), {"scores": staticmethod(
+                            lambda *_args: {})}),
+                    )
+        self.assertEqual(direction, "up")
+
     def test_no_external_dependencies_or_randomness(self):
         first = route_quality((3, 3), width=7, height=7, occupied={(3, 2)})
         self.assertEqual(first, route_quality((3, 3), width=7, height=7, occupied={(3, 2)}))
