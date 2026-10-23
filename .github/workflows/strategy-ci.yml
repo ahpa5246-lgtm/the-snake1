@@ -5,9 +5,13 @@ on:
     paths:
       - "main.py"
       - "strategy_search.py"
+      - "constrictor_search.py"
+      - "run_games.py"
       - "tests/test_main.py"
       - "tests/test_competitive_engine.py"
       - "tests/test_strategy_search.py"
+      - "tests/test_constrictor_search.py"
+      - "tests/test_standalone_rule_parity.py"
       - "test_seed8_regression.py"
       - ".github/workflows/strategy-ci.yml"
   push:
@@ -34,8 +38,8 @@ jobs:
       - name: Install lightweight test dependencies
         run: python -m pip install fastapi pydantic pytest
       - name: Compile
-        run: python -m compileall -q main.py strategy_search.py tests
+        run: python -m compileall -q main.py strategy_search.py constrictor_search.py run_games.py tests
       - name: Tactical rules and endpoint regressions
-        run: python -m pytest -q tests/test_main.py tests/test_competitive_engine.py tests/test_strategy_search.py
+        run: python -m pytest -q tests/test_main.py tests/test_competitive_engine.py tests/test_strategy_search.py tests/test_constrictor_search.py tests/test_standalone_rule_parity.py
       - name: Blackout seed and latency regressions
         run: python -m pytest -q test_seed8_regression.py
