@@ -50,6 +50,9 @@ SNAKE_INFO: dict[str, Any] = {
 # propagated to every graph operation so a dense board cannot turn into a timeout.
 COMPUTE_BUDGET_S = 0.200
 FOOD_STALE_TTL = 18
+# Drop states whose /end never arrived, and cap concurrently remembered games.
+GAME_MEMORY_TTL_S = 30 * 60
+MAX_REMEMBERED_GAMES = 256
 HUNGER_CRITICAL = 28
 HAZARD_SOFT_HEALTH = 30
 CORRIDOR_MARGIN = 2
@@ -188,7 +191,29 @@ def _is_in_view(pos: tuple[int, int], head: tuple[int, int], radius: int | None)
 
 
 def _new_mem_entry() -> dict[str, Any]:
-    return {"food": set(), "food_meta": {}, "enemy_info": {}, "latency_history": []}
+    return {"food": set(), "food_meta": {}, "enemy_info": {}, "latency_history": [],
+            "last_seen": time.monotonic()}
+
+
+def _touch_game_memory(game_id: str) -> None:
+    """Bound orphaned per-game observations without evicting the active game."""
+    now = time.monotonic()
+    entry = _game_memory.setdefault(game_id, _new_mem_entry())
+    entry["last_seen"] = now
+    if len(_game_memory) <= MAX_REMEMBERED_GAMES:
+        # Clean up expired entries on periodic touches too, not just over cap.
+        for key, memory in list(_game_memory.items()):
+            if key != game_id and now - memory.get("last_seen", now) > GAME_MEMORY_TTL_S:
+                _game_memory.pop(key, None)
+        return
+    for key, memory in list(_game_memory.items()):
+        if key != game_id and now - memory.get("last_seen", now) > GAME_MEMORY_TTL_S:
+            _game_memory.pop(key, None)
+    if len(_game_memory) > MAX_REMEMBERED_GAMES:
+        oldest = sorted((memory.get("last_seen", now), key)
+                        for key, memory in _game_memory.items() if key != game_id)
+        for _, key in oldest[:len(_game_memory) - MAX_REMEMBERED_GAMES]:
+            _game_memory.pop(key, None)
 
 
 def _update_food_memory(game_id: str, data: dict[str, Any]) -> set[tuple[int, int]]:
@@ -235,6 +260,7 @@ class NeuralAdvisor:
     _model: Any = None
     _board_size = 25
     _device = "cpu"
+    _status = "not_checked"
 
     @classmethod
     def _load(cls) -> None:
@@ -243,15 +269,28 @@ class NeuralAdvisor:
         cls._attempted = True
         model_path = os.getenv("BATTLESNAKE_MODEL_PATH")
         if not model_path:
+            cls._status = "not_configured"
+            log.warning("Neural adviser not configured; tactical fallback active")
+            return
+        if not Path(model_path).is_file():
+            cls._status = "checkpoint_missing"
+            log.warning("Neural adviser checkpoint missing; tactical fallback active")
             return
         try:
             from neural_policy import load_checkpoint
+            import torch
+            # Render Free has 512 MiB: prevent CPU inference from growing
+            # thread pools on every move, and run the model only once on boot.
+            torch.set_num_threads(1)
+            torch.set_num_interop_threads(1)
             model, metadata, _extra = load_checkpoint(model_path, device="cpu")
             cls._model, cls._board_size = model, metadata.board_size
-            log.info("Loaded neural adviser checkpoint from %s", model_path)
+            cls._status = "loaded"
+            log.info("Loaded neural adviser checkpoint successfully")
         except Exception as exc:  # broken/unsupported model must never break live play
             log.warning("Neural adviser disabled: %s", exc)
             cls._model = None
+            cls._status = "load_failed"
 
     @classmethod
     def scores(cls, data: dict[str, Any], legal: set[str], deadline: float) -> dict[str, float]:
@@ -618,10 +657,35 @@ def on_info() -> JSONResponse:
     return JSONResponse(SNAKE_INFO)
 
 
+def _resident_memory_mb() -> float | None:
+    """Current RSS of Linux Render worker without adding a psutil dependency."""
+    try:
+        with open("/proc/self/statm", encoding="ascii") as handle:
+            resident_pages = int(handle.read().split()[1])
+        return round(resident_pages * os.sysconf("SC_PAGE_SIZE") / 1048576, 1)
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+@app.get("/healthz")
+def on_health() -> JSONResponse:
+    """Public, secret-free deployment diagnostics for live verification."""
+    return JSONResponse({
+        "status": "ok",
+        "neural_adviser": NeuralAdvisor._status,
+        "configured_checkpoint": bool(os.getenv("BATTLESNAKE_MODEL_PATH")),
+        "resident_memory_mb": _resident_memory_mb(),
+        "remembered_games": len(_game_memory),
+        "engine_version": SNAKE_INFO["version"],
+    })
+
+
 @app.post("/start")
 def on_start(state: GameState) -> str:
     data = state.model_dump()
-    _game_memory[data.get("game", {}).get("id", "unknown")] = _new_mem_entry()
+    game_id = data.get("game", {}).get("id", "unknown")
+    _game_memory[game_id] = _new_mem_entry()
+    _touch_game_memory(game_id)
     return "ok"
 
 
@@ -631,6 +695,7 @@ def on_move(state: GameState) -> JSONResponse:
     deadline = started + COMPUTE_BUDGET_S
     data = state.model_dump()
     game_id = data.get("game", {}).get("id", "unknown")
+    _touch_game_memory(game_id)
     _update_enemy_memory(game_id, data)
     food = _update_food_memory(game_id, data)
     try:
