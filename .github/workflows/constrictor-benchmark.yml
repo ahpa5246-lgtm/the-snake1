@@ -1,0 +1,57 @@
+name: Constrictor Real-Engine Benchmark
+
+on:
+  pull_request:
+    paths:
+      - 'main.py'
+      - 'constrictor_search.py'
+      - 'training/constrictor_benchmark.py'
+      - '.github/workflows/constrictor-benchmark.yml'
+  workflow_dispatch:
+    inputs:
+      games:
+        description: 'Mirrored game count (even; use 200 for a larger sweep)'
+        required: true
+        default: '16'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  real-engine-constrictor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install fastapi pydantic hisss
+      - name: Mirrored Constrictor games against immutable base
+        env:
+          GAMES: "${{ github.event.inputs.games || '16' }}"
+          OMP_NUM_THREADS: '1'
+        run: |
+          python training/constrictor_benchmark.py --baseline-ref origin/main --games "$GAMES" --seed 173 --output constrictor-benchmark.json
+      - name: Publish results summary
+        if: always()
+        run: |
+          if test -f constrictor-benchmark.json; then
+            python - <<'PY'
+          import json,os
+          d=json.load(open('constrictor-benchmark.json'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('### Mirrored Constrictor Hisss benchmark\n\n')
+              f.write('Games: %s; candidate: %s; baseline: %s; draws: %s; win share: %s\n\n' % (d['games'],d['counts']['candidate'],d['counts']['baseline'],d['counts']['draw'],d['candidate_win_share']))
+              f.write('Timing and invalid moves: %s\n' % {'latency':d['latency'],'invalid':d['invalid_moves']})
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: constrictor-mirrored-benchmark
+          path: constrictor-benchmark.json
+          if-no-files-found: warn
