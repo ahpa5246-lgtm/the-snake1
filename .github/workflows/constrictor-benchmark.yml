@@ -12,7 +12,7 @@ on:
       games:
         description: 'Mirrored game count (even; use 200 for a larger sweep)'
         required: true
-        default: '16'
+        default: '200'
         type: string
 
 permissions:
@@ -32,7 +32,7 @@ jobs:
       - run: python -m pip install fastapi pydantic hisss
       - name: Mirrored Constrictor games against immutable base
         env:
-          GAMES: "${{ github.event.inputs.games || '16' }}"
+          GAMES: "${{ github.event.inputs.games || '200' }}"
           OMP_NUM_THREADS: '1'
         run: |
           python training/constrictor_benchmark.py --baseline-ref origin/main --games "$GAMES" --seed 173 --output constrictor-benchmark.json
