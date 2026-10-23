@@ -190,16 +190,18 @@ def _random_empty(occupied: set) -> Optional[tuple[int, int]]:
     return None
 
 
-def _build_occupied_sim(snakes: list[Snake], new_heads: dict[int, tuple[int, int]] | None = None) -> set[tuple[int, int]]:
-    """
-    Tail-vacating-aware occupied set for the simulator itself (mirrors logic
-    in main.py's _build_occupied).  The tail is excluded unless the snake's
-    body[-1] == body[-2] (server duplicate-tail signal for "just ate").
+def _build_occupied_sim(
+    snakes: list[Snake],
+    new_heads: dict[int, tuple[int, int]] | None = None,
+    *, retained_tails: set[str] | None = None,
+) -> set[tuple[int, int]]:
+    """Cells that remain blocked after all snakes move simultaneously.
 
-    Also excludes current head positions of other snakes when new_heads is
-    provided, because all moves resolve simultaneously — a cell occupied by
-    another snake's head NOW will be vacated when that head moves.
+    Original head squares become neck squares, so they remain occupied.
+    Tails vacate only if unstacked and the snake is not eating this turn.
+    The optional new_heads argument is retained for existing callers.
     """
+    retained_tails = retained_tails or set()
     occ: set[tuple[int, int]] = set()
     for s in snakes:
         if not s.alive:
@@ -208,21 +210,18 @@ def _build_occupied_sim(snakes: list[Snake], new_heads: dict[int, tuple[int, int
         #   body[-1] == body[-2].
         # (Previously used body[0] == body[-1] which is almost never True
         #  for a fully-extended snake — Bug fix.)
-        just_ate = len(s.body) >= 2 and s.body[-1] == s.body[-2]
+        just_ate = (len(s.body) >= 2 and s.body[-1] == s.body[-2]) or s.id in retained_tails or len(s.body) == 1
         tail_idx = len(s.body) - 1
         for i, seg in enumerate(s.body):
             if i == tail_idx and not just_ate:
                 continue   # tail will vacate
             occ.add(seg)
-    # Remove current head positions that will be vacated by simultaneous moves.
-    # New head positions are checked separately (H2H for same-cell, body
-    # collision for the rest).  We only exclude heads of OTHER snakes — our
-    # own head is always in the body (index 0) and covered by the loop above.
-    if new_heads:
-        for s in snakes:
-            if s.alive and s.body:
-                occ.discard(s.body[0])  # current head will move
     return occ
+
+
+def _next_health(current: int, *, ate: bool, on_hazard: bool) -> int:
+    """Food resets health to 100 after per-turn hunger/hazard costs."""
+    return START_HEALTH if ate else current - HUNGER_PER_TURN - (HAZARD_DMG if on_hazard else 0)
 
 
 # ===========================================================================
@@ -335,8 +334,9 @@ def _run_standalone_game(
         # Starvation (health checked after hazard damage below)
         # Body collision (tail-vacating aware, head-vacating aware)
         alive_snakes = [snakes[i] for i in alive]
-        body_cells = _build_occupied_sim(alive_snakes, new_heads)
-        collision_sources = {s.id: _build_occupied_sim([s], new_heads) for s in alive_snakes}
+        eating_ids = {snakes[i].id for i in alive if new_heads[i] in food}
+        body_cells = _build_occupied_sim(alive_snakes, new_heads, retained_tails=eating_ids)
+        collision_sources = {s.id: _build_occupied_sim([s], new_heads, retained_tails=eating_ids) for s in alive_snakes}
         for i in alive:
             if new_heads[i] in body_cells:
                 snakes[i].alive = False
@@ -382,6 +382,7 @@ def _run_standalone_game(
         alive = [i for i, s in enumerate(snakes) if s.alive]
 
         # Advance bodies; eat food
+        ate_this_turn: set[int] = set()
         for i in alive:
             ate = new_heads[i] in food
             snakes[i].body.insert(0, new_heads[i])
@@ -389,7 +390,7 @@ def _run_standalone_game(
             # Retaining it here as well as duplicating below grew by two.
             snakes[i].body.pop()
             if ate:
-                snakes[i].health = START_HEALTH
+                ate_this_turn.add(i)
                 # Duplicate tail segment — matches real server behaviour so
                 # that _build_occupied_sim can detect "just ate" via
                 # body[-1] == body[-2] on the NEXT turn.
@@ -399,10 +400,10 @@ def _run_standalone_game(
         # Hunger + hazard damage
         hazard_set = set(HAZARD_CELLS)
         for i in alive:
-            snakes[i].health -= HUNGER_PER_TURN
             on_hazard = snakes[i].head in hazard_set
-            if on_hazard:
-                snakes[i].health -= HAZARD_DMG
+            ate = i in ate_this_turn
+            snakes[i].health = _next_health(snakes[i].health, ate=ate, on_hazard=on_hazard)
+            if on_hazard and not ate:
                 hazard_dmg_total += HAZARD_DMG
             if snakes[i].health <= 0:
                 snakes[i].alive = False
